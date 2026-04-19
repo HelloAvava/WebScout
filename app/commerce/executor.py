@@ -956,6 +956,24 @@ def should_continue_collecting_marketplace_evidence(
     )
 
 
+def should_continue_collecting_after_marketplace_evidence(
+    task: CommerceTask,
+    evidence: List[EvidenceItem],
+    execution_profile: ExecutionProfile,
+) -> bool:
+    if (
+        execution_profile == PRODUCT_COMPARE_V2_PROFILE
+        and task.source_role == "official"
+        and task.category == "pricing"
+        and not any(item.price is not None for item in evidence)
+    ):
+        return True
+
+    return should_continue_collecting_marketplace_evidence(
+        task, evidence, execution_profile
+    )
+
+
 def is_home_shell_page(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.path in HOME_SHELL_PATHS and not parsed.query
@@ -1389,12 +1407,13 @@ class CommerceResearchExecutor:
                 if (
                     self.execution_profile == PRODUCT_COMPARE_V2_PROFILE
                     and task.source_role == "official"
+                    and task.category == "pricing"
                     and not any(item.price is not None for item in evidence)
                 ):
                     logger.info(
                         f"Continuing beyond direct official observations for {task.platform} because no priced baseline was found"
                     )
-                elif should_continue_collecting_marketplace_evidence(
+                elif should_continue_collecting_after_marketplace_evidence(
                     task, evidence, self.execution_profile
                 ):
                     logger.info(
@@ -1407,7 +1426,7 @@ class CommerceResearchExecutor:
         mcp_evidence = await self._collect_mcp_evidence(task, diagnostics)
         if mcp_evidence:
             evidence.extend(mcp_evidence)
-            if not should_continue_collecting_marketplace_evidence(
+            if not should_continue_collecting_after_marketplace_evidence(
                 task, evidence, self.execution_profile
             ):
                 self.last_task_diagnostics = diagnostics

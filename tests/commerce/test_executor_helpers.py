@@ -1880,6 +1880,73 @@ async def test_product_compare_v2_executor_tries_mcp_before_search_browser_fallb
 
 
 @pytest.mark.asyncio
+async def test_product_compare_v2_executor_continues_official_fallback_after_unpriced_mcp_evidence(
+    monkeypatch,
+):
+    executor = CommerceResearchExecutor(execution_profile="product_compare_v2")
+    task = CommerceTask(
+        category="pricing",
+        platform="Apple.com",
+        query="iPhone 16 official specifications buy",
+        goal="collect official baseline price",
+        source_role="official",
+        strategy="policy_direct",
+    )
+
+    async def empty_direct_collect(*args, **kwargs):
+        return []
+
+    async def fake_mcp_collect(task_arg):
+        assert task_arg.platform == "Apple.com"
+        executor.mcp_bridge.last_diagnostics = []
+        return [
+            {
+                "platform": "Apple.com",
+                "title": "iPhone 16",
+                "url": "https://www.apple.com/iphone-16/",
+                "snippet": "Official product page without a listed price.",
+                "extracted_text": "iPhone 16 official product page.",
+                "source_type": "official",
+                "credibility": 0.98,
+                "metadata": {
+                    "mcp_tool": "official_product_page",
+                    "mcp_server": "commerce_public",
+                },
+            }
+        ]
+
+    fallback_attempted = False
+
+    def fake_build_platform_fallback_results(task_arg):
+        nonlocal fallback_attempted
+        assert task_arg.platform == "Apple.com"
+        fallback_attempted = True
+        return []
+
+    monkeypatch.setattr(
+        "app.commerce.executor._collect_marketplace_observations",
+        empty_direct_collect,
+    )
+    monkeypatch.setattr(
+        "app.commerce.executor._collect_official_observations",
+        empty_direct_collect,
+    )
+    monkeypatch.setattr(executor.mcp_bridge, "collect", fake_mcp_collect)
+    monkeypatch.setattr(
+        "app.commerce.executor.build_platform_fallback_results",
+        fake_build_platform_fallback_results,
+    )
+
+    evidence = await executor.execute_task(task)
+
+    assert fallback_attempted
+    assert len(evidence) == 1
+    assert evidence[0].platform == "Apple.com"
+    assert evidence[0].price is None
+    assert evidence[0].metadata["mcp_tool"] == "official_product_page"
+
+
+@pytest.mark.asyncio
 async def test_product_compare_v2_executor_drops_model_mismatch_from_direct_source(monkeypatch):
     executor = CommerceResearchExecutor(execution_profile="product_compare_v2")
     task = CommerceTask(

@@ -964,7 +964,6 @@ def should_continue_collecting_after_marketplace_evidence(
     if (
         execution_profile == PRODUCT_COMPARE_V2_PROFILE
         and task.source_role == "official"
-        and task.category == "pricing"
         and not any(item.price is not None for item in evidence)
     ):
         return True
@@ -1407,7 +1406,6 @@ class CommerceResearchExecutor:
                 if (
                     self.execution_profile == PRODUCT_COMPARE_V2_PROFILE
                     and task.source_role == "official"
-                    and task.category == "pricing"
                     and not any(item.price is not None for item in evidence)
                 ):
                     logger.info(

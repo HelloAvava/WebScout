@@ -1885,7 +1885,7 @@ async def test_product_compare_v2_executor_continues_official_fallback_after_unp
 ):
     executor = CommerceResearchExecutor(execution_profile="product_compare_v2")
     task = CommerceTask(
-        category="pricing",
+        category="official",
         platform="Apple.com",
         query="iPhone 16 official specifications buy",
         goal="collect official baseline price",

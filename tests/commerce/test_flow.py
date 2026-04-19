@@ -875,6 +875,41 @@ async def test_product_compare_v2_followup_suppresses_repeated_failed_platform_r
 
 
 @pytest.mark.asyncio
+async def test_product_compare_v2_followup_suppresses_aggregate_failed_platform_role():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare iPhone 16 prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+    )
+
+    followups = flow._derive_product_compare_v2_followup_tasks(
+        plan,
+        evidence=[],
+        completed_tasks=[],
+        failure_summary=[
+            {
+                "signature": "pricing:Amazon:timeout",
+                "count": 1,
+                "last_reason": "timeout",
+                "next_action": "fallback",
+            },
+            {
+                "signature": "pricing:Amazon:login_required",
+                "count": 1,
+                "last_reason": "login_required",
+                "next_action": "fallback",
+            },
+        ],
+    )
+
+    followup_marketplaces = {
+        task.platform for task in followups if task.source_role == "marketplace"
+    }
+    assert "Amazon" not in followup_marketplaces
+    assert "Best Buy" in followup_marketplaces
+
+
+@pytest.mark.asyncio
 async def test_product_compare_v2_report_marks_generic_macbook_cross_config_quotes_as_partial(monkeypatch):
     flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
 

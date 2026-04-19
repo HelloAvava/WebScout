@@ -341,19 +341,23 @@ def _update_failure_summary(
 def _suppressed_platform_roles_from_failures(
     failure_summary: List[Dict[str, Any]],
 ) -> set[tuple[str, str]]:
-    suppressed: set[tuple[str, str]] = set()
+    pair_counts: Dict[tuple[str, str], int] = {}
     for item in failure_summary:
-        if int(item.get("count", 0)) < FOLLOWUP_SUPPRESSION_FAILURE_COUNT:
-            continue
         signature = str(item.get("signature") or "")
         parts = signature.split(":", 2)
         if len(parts) != 3:
             continue
         category, platform, _reason = parts
         source_role = SOURCE_ROLE_BY_CATEGORY.get(category)
-        if source_role:
-            suppressed.add((platform, source_role))
-    return suppressed
+        if not source_role:
+            continue
+        pair = (platform, source_role)
+        pair_counts[pair] = pair_counts.get(pair, 0) + int(item.get("count", 0))
+    return {
+        pair
+        for pair, count in pair_counts.items()
+        if count >= FOLLOWUP_SUPPRESSION_FAILURE_COUNT
+    }
 
 
 def _detect_platforms(request_text: str, candidates: Dict[str, List[str]]) -> List[str]:

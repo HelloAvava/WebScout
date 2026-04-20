@@ -2438,11 +2438,16 @@ class CommerceDecisionFlow(BaseFlow):
                 f"已围绕 {plan.product_name} 收集到部分证据，但仍缺 {_join_report_phrases(missing_bits) if missing_bits else '关键支撑信息'}。"
             )
 
-        recommended_choice = (
-            "先用官方基准统一型号、容量、颜色和销售条件，再只比较同一配置、同一成色、售后条件一致的商城报价。"
-            if marketplace_quotes and official_baseline
-            else "在商城报价、官方基准和口碑样本补齐前，不建议把这轮结果当作最终购买建议。"
-        )
+        if marketplace_quotes and official_baseline:
+            recommended_choice = (
+                "先用官方基准统一型号、容量、颜色和销售条件，再只比较同一配置、同一成色、售后条件一致的商城报价。"
+            )
+        elif missing_bits:
+            recommended_choice = (
+                f"当前只适合作为初筛；请先补齐{_join_report_phrases(missing_bits)}，再把这轮结果当作最终购买建议。"
+            )
+        else:
+            recommended_choice = "当前证据仍偏弱，建议补充第二来源复核后再做最终购买判断。"
         if degraded_marketplace_items:
             if any(
                 item.metadata.get("quote_reason")

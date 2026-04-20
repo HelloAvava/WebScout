@@ -40,6 +40,8 @@ SEARCH_TIMEOUT_SECONDS = 45
 SOCIAL_SEARCH_TIMEOUT_SECONDS = 18
 DIRECT_COLLECTION_TIMEOUT_SECONDS = 35
 MCP_COLLECTION_TIMEOUT_SECONDS = 35
+PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 20
+PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS = 18
 BROWSER_NAVIGATION_TIMEOUT_SECONDS = 45
 BROWSER_EXTRACTION_TIMEOUT_SECONDS = 90
 BROWSER_STATE_TIMEOUT_SECONDS = 20
@@ -1085,13 +1087,31 @@ def get_search_timeout_seconds(task: CommerceTask) -> int:
     return SEARCH_TIMEOUT_SECONDS
 
 
+def get_direct_collection_timeout_seconds(
+    task: CommerceTask, execution_profile: ExecutionProfile
+) -> int:
+    if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
+        return PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS
+    return DIRECT_COLLECTION_TIMEOUT_SECONDS
+
+
+def get_mcp_collection_timeout_seconds(
+    task: CommerceTask, execution_profile: ExecutionProfile
+) -> int:
+    if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
+        return PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS
+    return MCP_COLLECTION_TIMEOUT_SECONDS
+
+
 def should_prefer_direct_platform_fallback(
     task: CommerceTask, execution_profile: ExecutionProfile
 ) -> bool:
     if execution_profile == STABLE_PUBLIC_WEB_PROFILE:
         return task.platform in STABLE_PUBLIC_WEB_DIRECT_FALLBACK_PLATFORMS
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
-        return bool(task.source_role in {"official", "review_video", "review_community"})
+        if task.source_role in {"official", "review_video", "review_community"}:
+            return True
+        return task.source_role == "marketplace" and task.strategy == "policy_direct"
     return False
 
 
@@ -1248,14 +1268,17 @@ class CommerceResearchExecutor:
                 )
             return []
 
+        mcp_timeout_seconds = get_mcp_collection_timeout_seconds(
+            task, self.execution_profile
+        )
         try:
             mcp_observations = await asyncio.wait_for(
                 self.mcp_bridge.collect(task),
-                timeout=MCP_COLLECTION_TIMEOUT_SECONDS,
+                timeout=mcp_timeout_seconds,
             )
         except TimeoutError:
             logger.warning(
-                f"MCP collection timed out for {task.category} @ {task.platform} after {MCP_COLLECTION_TIMEOUT_SECONDS}s"
+                f"MCP collection timed out for {task.category} @ {task.platform} after {mcp_timeout_seconds}s"
             )
             self._append_task_diagnostic(
                 diagnostics,
@@ -1376,19 +1399,22 @@ class CommerceResearchExecutor:
 
         direct_observations: List[Dict[str, object]] = []
         try:
+            direct_timeout_seconds = get_direct_collection_timeout_seconds(
+                task, self.execution_profile
+            )
             if self.execution_profile == PRODUCT_COMPARE_V2_PROFILE:
                 direct_observations = await asyncio.wait_for(
                     self._collect_product_compare_v2_observations(task),
-                    timeout=DIRECT_COLLECTION_TIMEOUT_SECONDS,
+                    timeout=direct_timeout_seconds,
                 )
             elif self.execution_profile == STABLE_PUBLIC_WEB_PROFILE:
                 direct_observations = await asyncio.wait_for(
                     self._collect_stable_public_observations(task),
-                    timeout=DIRECT_COLLECTION_TIMEOUT_SECONDS,
+                    timeout=direct_timeout_seconds,
                 )
         except TimeoutError:
             logger.warning(
-                f"Direct collection timed out for {task.category} @ {task.platform} after {DIRECT_COLLECTION_TIMEOUT_SECONDS}s"
+                f"Direct collection timed out for {task.category} @ {task.platform} after {direct_timeout_seconds}s"
             )
             self._append_task_diagnostic(
                 diagnostics,

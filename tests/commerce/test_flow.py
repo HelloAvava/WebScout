@@ -751,6 +751,19 @@ async def test_product_compare_v2_plan_uses_brand_policy_without_llm(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_product_compare_v2_plan_preserves_iphone_number_with_colon_prompt():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "iPhone 16: compare prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+    )
+
+    assert plan.product_name == "iPhone 16"
+    assert plan.tasks[0].query.startswith("Apple iPhone 16 price Amazon")
+    assert plan.tasks[1].query.startswith("Apple iPhone 16 price Best Buy")
+
+
+@pytest.mark.asyncio
 async def test_product_compare_v2_plan_builds_generic_macbook_policy():
     flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
 
@@ -1135,6 +1148,75 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
     assert report.status == "complete"
     assert len(report.marketplace_quotes) == 2
     assert not any("同一配置的第二个有效商城报价" in item for item in report.rumors_or_uncertain)
+
+
+@pytest.mark.asyncio
+async def test_product_compare_v2_recommendation_only_names_missing_evidence(monkeypatch):
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    async def fake_review_highlights(*args, **kwargs):
+        return ["Review samples are limited but generally positive."]
+
+    monkeypatch.setattr(
+        flow,
+        "_build_product_compare_v2_review_highlights",
+        fake_review_highlights,
+    )
+    plan = flow._build_product_compare_v2_plan(
+        "Compare iPhone 16 prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+    )
+    evidence = [
+        EvidenceItem(
+            category="official",
+            platform="Apple.com",
+            title="Apple official product page",
+            url="https://www.apple.com/shop/buy-iphone/iphone-16",
+            snippet="iPhone 16 starts at $699.",
+            source_type="official",
+            credibility=0.98,
+            source_role="official",
+            price=PriceObservation(
+                platform="Apple.com",
+                title="Apple official product page",
+                url="https://www.apple.com/shop/buy-iphone/iphone-16",
+                price_text="$699.00",
+                currency="$",
+                amount=699.0,
+            ),
+        ),
+        EvidenceItem(
+            category="reviews",
+            platform="YouTube",
+            title="iPhone 16 long term review",
+            url="https://www.youtube.com/watch?v=example",
+            snippet="Reviewers like the reliable iOS experience.",
+            source_type="media",
+            credibility=0.8,
+            source_role="review_video",
+        ),
+        EvidenceItem(
+            category="social",
+            platform="Reddit",
+            title="iPhone 16 owner thread",
+            url="https://www.reddit.com/r/iphone/comments/example",
+            snippet="Owners discuss battery life and value.",
+            source_type="community",
+            credibility=0.72,
+            source_role="review_community",
+        ),
+    ]
+
+    report = await flow._build_product_compare_v2_report(
+        request_text="Compare iPhone 16 prices on Amazon and Best Buy.",
+        plan=plan,
+        evidence=evidence,
+        diagnostics=[],
+        environment=CommerceExecutionEnvironment(**flow.executor.environment_metadata),
+    )
+
+    assert "商城报价" in report.recommended_choice
+    assert "官方基准" not in report.recommended_choice
+    assert "口碑样本" not in report.recommended_choice
 
 
 @pytest.mark.asyncio

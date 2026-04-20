@@ -312,6 +312,25 @@ def test_build_search_overrides_for_stable_public_web_profile():
     assert build_search_overrides("default") == {}
 
 
+def test_product_compare_v2_search_queries_preserve_pixel_model():
+    task = CommerceTask(
+        category="pricing",
+        platform="Amazon",
+        query="Google Pixel 9 price Amazon",
+        goal="collect current Amazon price",
+        source_role="marketplace",
+        strategy="policy_direct",
+    )
+
+    queries = build_search_queries(task)
+
+    assert any(
+        "Google Pixel 9" in query or '"Google Pixel 9"' in query
+        for query in queries
+    )
+    assert all("Compare price" not in query for query in queries)
+
+
 def test_stable_public_web_prefers_direct_platform_fallback():
     task = CommerceTask(
         category="reviews",
@@ -346,6 +365,19 @@ def test_product_compare_v2_prefers_direct_platform_fallback_for_policy_sources(
     assert not should_prefer_direct_platform_fallback(
         marketplace_task, "product_compare_v2"
     )
+
+
+def test_product_compare_v2_prefers_direct_platform_fallback_for_policy_marketplaces():
+    task = CommerceTask(
+        category="pricing",
+        platform="Best Buy",
+        query="Google Pixel 9 price Best Buy",
+        goal="collect current Best Buy price",
+        source_role="marketplace",
+        strategy="policy_direct",
+    )
+
+    assert should_prefer_direct_platform_fallback(task, "product_compare_v2")
 
 
 def test_marketplace_keywords_add_brand_and_base_model_exclusions():
@@ -1034,6 +1066,26 @@ def test_social_search_timeout_is_more_aggressive():
             goal="collect official specs",
         )
     )
+
+
+def test_product_compare_v2_collection_timeouts_prioritize_report_delivery():
+    from app.commerce import executor as executor_module
+
+    task = CommerceTask(
+        category="pricing",
+        platform="Best Buy",
+        query="Google Pixel 9 price Best Buy",
+        goal="collect current Best Buy price",
+        source_role="marketplace",
+        strategy="policy_direct",
+    )
+
+    assert executor_module.get_direct_collection_timeout_seconds(
+        task, "product_compare_v2"
+    ) < executor_module.get_direct_collection_timeout_seconds(task, "default")
+    assert executor_module.get_mcp_collection_timeout_seconds(
+        task, "product_compare_v2"
+    ) < executor_module.get_mcp_collection_timeout_seconds(task, "default")
 
 
 def test_mcp_bridge_parses_structured_price_output():

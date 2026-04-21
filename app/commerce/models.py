@@ -13,6 +13,7 @@ SourceRole = Literal[
     "review_marketplace",
     "review_video",
     "review_community",
+    "review_editorial",
 ]
 TaskStrategy = Literal["policy_direct", "mcp", "search_browser"]
 DecisionStatus = Literal["complete", "partial", "incomplete"]

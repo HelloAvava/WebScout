@@ -31,6 +31,7 @@ DEFAULT_PREFERRED_MCP_TOOLS = {
     "official": ["official_catalog_search"],
     "review_video": ["youtube_video_review_search"],
     "review_community": ["reddit_community_review_search"],
+    "review_editorial": ["editorial_web_review_search"],
 }
 OFFICIAL_SOURCE_DOMAINS: Dict[str, str] = {
     "Apple.com": "apple.com",

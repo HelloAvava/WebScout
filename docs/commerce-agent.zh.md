@@ -4,7 +4,7 @@
 
 Commerce browser flow 是 OpenManus 上面向商品研究、公开网页采集和购买决策报告的一条专用链路。它不是通用网页浏览器的简单 prompt 包装，而是把商品识别、来源策略、证据采集、覆盖率复核和最终报告合成拆成可测试的模块。
 
-当前目标是：在 `public_only` 或可选会话浏览器模式下，尽量从公开网页、公开 API、MCP 工具和搜索结果中收集价格、官方基线、零售评论、视频评测和社区反馈，并在报告中明确区分“已确认”“部分确认”“被拦截/缺失”的证据。
+当前目标是：在 `public_only` 或可选会话浏览器模式下，尽量从公开网页、公开 API、MCP 工具和搜索结果中收集价格、官方基线、零售评论、专业评测/公开网页、视频评测和社区反馈，并在报告中明确区分“已确认”“部分确认”“被拦截/缺失”的证据。
 
 ## Profile
 
@@ -23,7 +23,7 @@ flowchart TB
   F --> P["Planner<br/>商品识别、来源策略、任务图"]
   P --> PL["CommercePlan<br/>tasks + comparison_subject"]
   PL --> E["CommerceResearchExecutor<br/>采集与诊断"]
-  E --> D["Direct public collectors<br/>价格、官方、零售评论、YouTube、Reddit"]
+  E --> D["Direct public collectors<br/>价格、官方、零售评论、专业评测、YouTube、Reddit"]
   E --> M["CommerceMCPBridge<br/>可选 MCP 工具选择与归一化"]
   E --> B["CommerceBrowserController<br/>公开浏览器 / 本机会话浏览器"]
   D --> EV["EvidenceItem / PriceObservation / diagnostics"]
@@ -83,7 +83,7 @@ sequenceDiagram
 | `app/commerce/policy.py` | 商品身份识别、品牌/品类 source policy、配置敏感商品判断 |
 | `app/commerce/models.py` | `ProductIdentity`、`CommercePlan`、`CommerceTask`、`EvidenceItem`、`DecisionReport` 等 Pydantic 契约 |
 | `app/commerce/executor.py` | 单任务采集执行器，按 direct collector、MCP、search/browser fallback 顺序收集证据 |
-| `app/mcp/commerce_public_server.py` | 内置公开 MCP server 和 direct collector，覆盖商城、官方、零售评论、YouTube、Reddit 等公开来源 |
+| `app/mcp/commerce_public_server.py` | 内置公开 MCP server 和 direct collector，覆盖商城、官方、零售评论、专业评测/公开网页、YouTube、Reddit 等公开来源 |
 | `app/commerce/mcp_bridge.py` | 可选 MCP 工具发现、打分、调用、结果归一化和诊断 |
 | `app/commerce/browser.py` | 浏览器运行时选择：`public_only`、`auto`、`local_cdp` |
 | `app/commerce/grounding.py` | 脆弱页面的 DOM/视觉 grounding 辅助，不用于绕过登录或验证码 |
@@ -151,7 +151,7 @@ V2 的规划过程大致是：
 2. 根据品牌和品类选择 source policy。
 3. 判断是否为配置敏感系列，例如 MacBook Pro、MacBook Air、笔记本、平板等。
 4. 如果用户只写了系列名，生成 `comparison_subject` 作为代表型号。
-5. 为价格、官方基线、零售评论、视频评测、社区反馈生成独立任务。
+5. 为价格、官方基线、零售评论、专业评测/公开网页、视频评测、社区反馈生成独立任务。
 6. 对每个任务设置 source、query、allowed domains 和期望输出。
 
 当前内置代表型号示例：
@@ -186,6 +186,7 @@ Direct collector 是 `product_compare_v2` 的第一优先级，因为它能直�
 - 商城报价：Amazon、Best Buy、Walmart、Target、B&H、Newegg 等公开可访问结果，具体可用性取决于页面和搜索结果。
 - 官方基线：Apple、Google、Samsung、Microsoft 等品牌官网公开目录或搜索结果。
 - 零售评论：Amazon、Best Buy、Walmart、Target、B&H、Newegg 等来源的公开评论片段。
+- 专业评测/公开网页：The Verge、Wired、CNET、PCMag、Tom's Guide、TechRadar、Engadget、GSMArena、Notebookcheck、RTINGS、MacRumors、9to5Mac、Ars Technica、Consumer Reports、Wirecutter/NYTimes、DXOMARK、Trusted Reviews、Expert Reviews、Reviewed 等公开搜索可命中的评测、购买指南和问题汇总。
 - 视频评测：YouTube 公开搜索结果和元数据。
 - 社区反馈：Reddit 公开搜索/JSON 链路。
 
@@ -219,7 +220,7 @@ MCP bridge 用于接入更强的结构化工具。它会根据任务类型、sou
 - 代表型号或用户指定配置。
 - 报价表，包括价格、商家、型号/配置、置信度和可比性说明。
 - 官方基线，用来识别折扣、溢价和跨配置风险。
-- 零售评论、YouTube、Reddit 的口碑摘要。
+- 零售评论、专业评测/公开网页、YouTube、Reddit 的口碑摘要。
 - 样本来源和样本数量。
 - 受限来源、失败来源、降级样本和下一步建议。
 
@@ -239,7 +240,7 @@ V2 手机示例：
 python run_commerce.py \
   --execution-profile product_compare_v2 \
   --browser-session-mode public_only \
-  --prompt "Compare iPhone 16 prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals plus YouTube and Reddit real-user feedback."
+  --prompt "Compare iPhone 16 prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals, professional editorial reviews, plus YouTube and Reddit real-user feedback."
 ```
 
 V2 笔记本代表型号示例：
@@ -248,7 +249,7 @@ V2 笔记本代表型号示例：
 python run_commerce.py \
   --execution-profile product_compare_v2 \
   --browser-session-mode public_only \
-  --prompt "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals plus YouTube and Reddit real-user feedback; use public sources only and produce a detailed Chinese decision report with evidence, SKU caveats, price confidence, and buying recommendation."
+  --prompt "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals, professional editorial reviews, plus YouTube and Reddit real-user feedback; use public sources only and produce a detailed Chinese decision report with evidence, SKU caveats, price confidence, and buying recommendation."
 ```
 
 如果 prompt 不够具体，V2 会优先收敛到一个代表型号；如果用户希望比较多个具体 SKU，建议在 prompt 中直接列出尺寸、芯片、内存、存储和颜色。

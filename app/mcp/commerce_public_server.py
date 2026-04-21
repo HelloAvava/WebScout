@@ -162,6 +162,90 @@ REDDIT_HOSTS = {"www.reddit.com", "reddit.com", "old.reddit.com"}
 REDDIT_COMMENT_URL_RE = re.compile(
     r"https://www\.reddit\.com/r/(?P<subreddit>[^/]+)/comments/[^\s\"'>)]+"
 )
+EDITORIAL_REVIEW_DOMAINS = {
+    "theverge.com",
+    "www.theverge.com",
+    "wired.com",
+    "www.wired.com",
+    "cnet.com",
+    "www.cnet.com",
+    "pcmag.com",
+    "www.pcmag.com",
+    "tomsguide.com",
+    "www.tomsguide.com",
+    "techradar.com",
+    "www.techradar.com",
+    "engadget.com",
+    "www.engadget.com",
+    "digitaltrends.com",
+    "www.digitaltrends.com",
+    "androidauthority.com",
+    "www.androidauthority.com",
+    "gsmarena.com",
+    "www.gsmarena.com",
+    "notebookcheck.net",
+    "www.notebookcheck.net",
+    "rtings.com",
+    "www.rtings.com",
+    "macrumors.com",
+    "www.macrumors.com",
+    "9to5mac.com",
+    "www.9to5mac.com",
+    "arstechnica.com",
+    "www.arstechnica.com",
+    "consumerreports.org",
+    "www.consumerreports.org",
+    "wirecutter.com",
+    "www.wirecutter.com",
+    "nytimes.com",
+    "www.nytimes.com",
+    "dxomark.com",
+    "www.dxomark.com",
+    "trustedreviews.com",
+    "www.trustedreviews.com",
+    "expertreviews.co.uk",
+    "www.expertreviews.co.uk",
+    "reviewed.usatoday.com",
+}
+EDITORIAL_REVIEW_SITE_QUERY_GROUPS = [
+    ("theverge.com", "wired.com", "cnet.com", "pcmag.com", "tomsguide.com"),
+    ("techradar.com", "engadget.com", "digitaltrends.com", "androidauthority.com"),
+    ("gsmarena.com", "notebookcheck.net", "rtings.com", "arstechnica.com"),
+    ("macrumors.com", "9to5mac.com", "consumerreports.org", "nytimes.com"),
+    ("dxomark.com", "trustedreviews.com", "expertreviews.co.uk", "reviewed.usatoday.com"),
+]
+EDITORIAL_REVIEW_EXCLUDED_HOSTS = {
+    *YOUTUBE_HOSTS,
+    *REDDIT_HOSTS,
+    *MARKETPLACE_DOMAINS.values(),
+    *OFFICIAL_DOMAINS.values(),
+    "baidu.com",
+    "www.baidu.com",
+    "image.baidu.com",
+    "google.com",
+    "www.google.com",
+    "bing.com",
+    "www.bing.com",
+    "duckduckgo.com",
+    "html.duckduckgo.com",
+    "search.yahoo.com",
+    "shopping.google.com",
+    "news.google.com",
+}
+EDITORIAL_REVIEW_SIGNAL_TERMS = {
+    "review",
+    "reviews",
+    "tested",
+    "hands-on",
+    "hands on",
+    "long term",
+    "buying guide",
+    "best",
+    "worth it",
+    "pros",
+    "cons",
+    "verdict",
+}
 MIRROR_SUPPORTED_HOSTS = {
     "amazon.com",
     "www.amazon.com",
@@ -392,6 +476,11 @@ def _clean_product_query(query: str, platform: str = "") -> str:
         "google store",
         "samsung.com",
         "samsung store",
+        "editorial",
+        "professional",
+        "expert",
+        "buying guide",
+        "buyers guide",
     ]
     for token in sorted((token for token in removable_tokens if token), key=len, reverse=True):
         cleaned = re.sub(re.escape(token), " ", cleaned, flags=re.IGNORECASE)
@@ -3362,6 +3451,137 @@ async def _collect_reddit_review_observations(
     return _rank_reddit_review_observations(observations, product_hint)[:max_results]
 
 
+def _editorial_review_query(query: str) -> str:
+    product = _clean_review_product_query(query, "Editorial Web")
+    return f'"{product}" review long term pros cons buying guide problems'.strip()
+
+
+def _editorial_review_queries(query: str) -> List[str]:
+    product = _clean_review_product_query(query, "Editorial Web")
+    queries = [
+        _editorial_review_query(query),
+        f'"{product}" professional review verdict battery performance complaints'.strip(),
+        f'"{product}" expert review should you buy'.strip(),
+    ]
+    for domain_group in EDITORIAL_REVIEW_SITE_QUERY_GROUPS:
+        site_filter = " OR ".join(f"site:{domain}" for domain in domain_group)
+        queries.append(f'"{product}" review ({site_filter})'.strip())
+    return list(dict.fromkeys(item for item in queries if item.strip()))
+
+
+def _is_editorial_review_result(result: SearchResult, product_hint: str) -> bool:
+    parsed = urlparse(result.url or "")
+    domain = parsed.netloc.lower()
+    if not domain:
+        return False
+    path = parsed.path.lower()
+    query_text = parsed.query.lower()
+    if any(
+        domain == host or domain.endswith(f".{host}")
+        for host in EDITORIAL_REVIEW_EXCLUDED_HOSTS
+    ):
+        return False
+    if (
+        "search" in path
+        or "search" in query_text
+        or "image" in path
+        or "shopping" in path
+    ) and domain not in EDITORIAL_REVIEW_DOMAINS:
+        return False
+
+    title = result.title or ""
+    description = result.description or result.raw_content or ""
+    body = f"{title} {description}"
+    lowered_body = body.lower()
+    has_review_signal = any(term in lowered_body for term in EDITORIAL_REVIEW_SIGNAL_TERMS)
+    if not has_review_signal and domain not in EDITORIAL_REVIEW_DOMAINS:
+        return False
+    return _matches_product_hint(title, description, product_hint)
+
+
+def _rank_editorial_review_observation(
+    item: Dict[str, Any], product_hint: str
+) -> float:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    domain = str(metadata.get("source_domain") or "").lower()
+    title = str(item.get("title") or "")
+    snippet = str(item.get("snippet") or "")
+    extracted_text = str(item.get("extracted_text") or "")
+    body = " ".join([title, snippet, extracted_text])
+    value = float(item.get("credibility") or 0.0) * 10
+    value += 20 if _matches_product_hint(title, body, product_hint) else -20
+    value += 10 if domain in EDITORIAL_REVIEW_DOMAINS else 0
+    lowered = body.lower()
+    value += 3 * sum(
+        1
+        for term in ["review", "verdict", "tested", "long term", "pros", "cons"]
+        if term in lowered
+    )
+    return value
+
+
+async def _collect_editorial_review_observations(
+    query: str,
+    *,
+    max_results: int = 8,
+) -> List[Dict[str, Any]]:
+    product_hint = _clean_review_product_query(query, "Editorial Web")
+    observations: List[Dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for search_query in _editorial_review_queries(query):
+        results = await _execute_search(
+            search_query,
+            num_results=max(max_results * 2, 8),
+            lang="en",
+            country="us",
+        )
+        for result in results:
+            if result.url in seen_urls:
+                continue
+            if not _is_editorial_review_result(result, product_hint):
+                continue
+            seen_urls.add(result.url)
+            parsed = urlparse(result.url)
+            domain = re.sub(r"^www\.", "", parsed.netloc.lower())
+            fetched_text = ""
+            if len(observations) < min(3, max_results):
+                try:
+                    fetched_text = await _fetch_page_text(result.url)
+                except Exception:
+                    fetched_text = ""
+            extracted_text = _strip_markup(fetched_text)[:1600] if fetched_text else ""
+            observations.append(
+                _make_observation(
+                    platform="Editorial Web",
+                    title=result.title or "Editorial review result",
+                    url=result.url,
+                    snippet=result.description or result.raw_content or "",
+                    extracted_text=extracted_text or result.description or result.raw_content or "",
+                    source_type="media",
+                    credibility=0.82 if domain in EDITORIAL_REVIEW_DOMAINS else 0.72,
+                    metadata={
+                        "mcp_kind": "reviews",
+                        "strategy": "editorial_search_result",
+                        "source_domain": domain,
+                        "search_query": search_query,
+                        "search_source": result.source,
+                    },
+                )
+            )
+            if len(observations) >= max_results * 2:
+                break
+        if len(observations) >= max_results:
+            break
+
+    observations = _dedupe_review_observations(observations)
+    observations.sort(
+        key=lambda item: _rank_editorial_review_observation(item, product_hint),
+        reverse=True,
+    )
+    return observations[:max_results]
+
+
 def _dedupe_review_observations(observations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     deduped: List[Dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -4162,6 +4382,37 @@ class RedditCommunityReviewSearchTool(BaseTool):
         return ToolResult(output=json.dumps({"observations": observations}, ensure_ascii=False))
 
 
+class EditorialWebReviewSearchTool(BaseTool):
+    name: str = "editorial_web_review_search"
+    description: str = "Search public editorial, professional, and buying-guide review pages."
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Product query."},
+            "platform": {
+                "type": "string",
+                "description": "Review layer, typically Editorial Web.",
+                "default": "Editorial Web",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of editorial review signals to inspect.",
+                "default": 6,
+            },
+        },
+        "required": ["query"],
+    }
+
+    async def execute(
+        self, query: str, platform: str = "Editorial Web", max_results: int = 6
+    ) -> ToolResult:
+        observations = await _collect_editorial_review_observations(
+            query,
+            max_results=max_results,
+        )
+        return ToolResult(output=json.dumps({"observations": observations}, ensure_ascii=False))
+
+
 class PriceBenchmarkSearchTool(BaseTool):
     name: str = "price_benchmark_search"
     description: str = (
@@ -4234,6 +4485,7 @@ class CommercePublicMCPServer:
             "marketplace_customer_review_search": MarketplaceCustomerReviewSearchTool(),
             "youtube_video_review_search": YouTubeVideoReviewSearchTool(),
             "reddit_community_review_search": RedditCommunityReviewSearchTool(),
+            "editorial_web_review_search": EditorialWebReviewSearchTool(),
         }
 
     def register_tool(self, tool: BaseTool, method_name: Optional[str] = None) -> None:

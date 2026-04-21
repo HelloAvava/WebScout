@@ -108,6 +108,8 @@ STABLE_PUBLIC_WEB_REVIEW_LLM_SAMPLE_LIMIT = 30
 PRODUCT_COMPARE_V2_VIDEO_SAMPLE_COUNT = 30
 PRODUCT_COMPARE_V2_COMMUNITY_SAMPLE_COUNT = 24
 PRODUCT_COMPARE_V2_MARKETPLACE_REVIEW_SAMPLE_COUNT = 12
+PRODUCT_COMPARE_V2_EDITORIAL_REVIEW_SAMPLE_COUNT = 10
+PRODUCT_COMPARE_V2_EDITORIAL_REVIEW_PLATFORM = "Editorial Web"
 PRODUCT_COMPARE_V2_EXTRA_RETAIL_REVIEW_PLATFORMS = [
     "Amazon",
     "Best Buy",
@@ -764,6 +766,25 @@ def _is_product_compare_v2_video_review_item(item: EvidenceItem) -> bool:
     )
 
 
+def _is_product_compare_v2_editorial_review_item(item: EvidenceItem) -> bool:
+    parsed = urlparse(item.url)
+    domain = parsed.netloc.lower()
+    is_search_page = (
+        "search" in parsed.path.lower()
+        or "search" in parsed.query.lower()
+        or item.metadata.get("search_source") == "platform_fallback"
+    )
+    return (
+        item.category == "reviews"
+        and item.source_role == "review_editorial"
+        and item.source_type == "media"
+        and bool((item.extracted_text or item.snippet or "").strip())
+        and bool(domain)
+        and not item.metadata.get("blocked_reason")
+        and not is_search_page
+    )
+
+
 def _is_product_compare_v2_community_review_item(item: EvidenceItem) -> bool:
     parsed = urlparse(item.url)
     path = parsed.path.lower()
@@ -901,10 +922,11 @@ def _build_review_coverage_fact(review_items: List[EvidenceItem]) -> str:
 
 def _build_product_compare_v2_review_coverage_fact(
     marketplace_review_items: List[EvidenceItem],
+    editorial_items: List[EvidenceItem],
     video_items: List[EvidenceItem],
     community_items: List[EvidenceItem],
 ) -> str:
-    review_items = [*marketplace_review_items, *video_items, *community_items]
+    review_items = [*marketplace_review_items, *editorial_items, *video_items, *community_items]
     if not review_items:
         return ""
     grouped: Dict[tuple[str, str], int] = {}
@@ -916,6 +938,8 @@ def _build_product_compare_v2_review_coverage_fact(
     for (platform, role), count in sorted(grouped.items(), key=lambda entry: entry[0][0]):
         if role == "review_marketplace":
             noun = "零售评论样本"
+        elif role == "review_editorial":
+            noun = "专业评测/公开网页样本"
         elif role == "review_video":
             noun = "评测样本"
         else:
@@ -926,10 +950,11 @@ def _build_product_compare_v2_review_coverage_fact(
 
 def _product_compare_v2_review_coverage_parts(
     marketplace_review_items: List[EvidenceItem],
+    editorial_items: List[EvidenceItem],
     video_items: List[EvidenceItem],
     community_items: List[EvidenceItem],
 ) -> List[str]:
-    review_items = [*marketplace_review_items, *video_items, *community_items]
+    review_items = [*marketplace_review_items, *editorial_items, *video_items, *community_items]
     grouped: Dict[tuple[str, str], int] = {}
     for item in review_items:
         key = (item.platform, item.source_role or "")
@@ -939,6 +964,8 @@ def _product_compare_v2_review_coverage_parts(
     for (platform, role), count in sorted(grouped.items(), key=lambda entry: entry[0][0]):
         if role == "review_marketplace":
             noun = "零售评论样本"
+        elif role == "review_editorial":
+            noun = "专业评测/公开网页样本"
         elif role == "review_video":
             noun = "评测样本"
         else:
@@ -1003,10 +1030,12 @@ def _build_product_compare_v2_sample_coverage(
     *,
     planned_marketplaces: List[str],
     planned_marketplace_review_platforms: List[str],
+    planned_editorial_platforms: List[str],
     planned_video_platforms: List[str],
     planned_community_platforms: List[str],
     marketplace_items: List[EvidenceItem],
     marketplace_review_items: List[EvidenceItem],
+    editorial_items: List[EvidenceItem],
     official_item: Optional[EvidenceItem],
     video_items: List[EvidenceItem],
     community_items: List[EvidenceItem],
@@ -1042,6 +1071,26 @@ def _build_product_compare_v2_sample_coverage(
                     f"，覆盖 {_human_join(collected_retail_review_platforms)}。"
                     if collected_retail_review_platforms
                     else "；公开页面暂未拿到可验证评论。"
+                )
+            )
+        )
+
+    editorial_domains = _dedupe_strings(
+        [
+            urlparse(item.url).netloc.lower()
+            for item in editorial_items
+            if urlparse(item.url).netloc
+        ]
+    )
+    if planned_editorial_platforms:
+        coverage.append(
+            (
+                f"专业评测/公开网页覆盖：计划来源 { _human_join(planned_editorial_platforms) }，"
+                f"实际纳入 {len(editorial_items)} 条样本"
+                + (
+                    f"，覆盖 {_human_join(editorial_domains[:5])}。"
+                    if editorial_domains
+                    else "；公开搜索暂未拿到可验证专业评测。"
                 )
             )
         )
@@ -1129,11 +1178,13 @@ def _build_product_compare_v2_evidence_matrix(
     *,
     planned_marketplaces: List[str],
     planned_marketplace_review_platforms: List[str],
+    planned_editorial_platforms: List[str],
     planned_video_platforms: List[str],
     planned_community_platforms: List[str],
     clean_marketplace_items: List[EvidenceItem],
     official_item: Optional[EvidenceItem],
     marketplace_review_items: List[EvidenceItem],
+    editorial_items: List[EvidenceItem],
     video_items: List[EvidenceItem],
     community_items: List[EvidenceItem],
 ) -> List[str]:
@@ -1156,6 +1207,10 @@ def _build_product_compare_v2_evidence_matrix(
             "观察真实买家评分、到货/品控/售后摩擦 | 中高：受页面公开性限制 |"
         ),
         (
+            f"| 专业评测/公开网页 | {len(editorial_items)}/{len(planned_editorial_platforms) or 0} | "
+            "补独立评测、购买指南、问题汇总和竞品语境 | 中高：需注意发布时间和媒体立场 |"
+        ),
+        (
             f"| 视频评测 | {len(video_items)}/{len(planned_video_platforms) or 0} | "
             "补功能体验、影像/性能/续航场景判断 | 中：评测者视角较强 |"
         ),
@@ -1171,17 +1226,26 @@ def _build_product_compare_v2_review_deep_dive(
     product_name: str,
     review_highlights: List[str],
     marketplace_review_items: List[EvidenceItem],
+    editorial_items: List[EvidenceItem],
     video_items: List[EvidenceItem],
     community_items: List[EvidenceItem],
 ) -> List[str]:
-    review_items = [*marketplace_review_items, *video_items, *community_items]
+    review_items = [*marketplace_review_items, *editorial_items, *video_items, *community_items]
     if not review_items:
         return ["当前缺少可用评测和社区样本，无法做真正的口碑归纳。"]
 
     deep_dive: List[str] = []
-    if marketplace_review_items and video_items and community_items:
+    if marketplace_review_items and editorial_items and video_items and community_items:
+        deep_dive.append(
+            f"信号结构：{len(marketplace_review_items)} 条零售评论负责补买家评分和品控/售后摩擦，{len(editorial_items)} 条专业评测/公开网页负责补独立测评与购买指南，{len(video_items)} 条视频评测负责体验拆解，{len(community_items)} 条社区样本负责长期使用风险；四类信号需要分层阅读。"
+        )
+    elif marketplace_review_items and video_items and community_items:
         deep_dive.append(
             f"信号结构：{len(marketplace_review_items)} 条零售评论负责补买家评分和品控/售后摩擦，{len(video_items)} 条视频评测负责体验拆解，{len(community_items)} 条社区样本负责长期使用风险；三类信号需要分层阅读。"
+        )
+    elif editorial_items and (video_items or community_items or marketplace_review_items):
+        deep_dive.append(
+            f"信号结构：已加入 {len(editorial_items)} 条专业评测/公开网页样本，可用来校准零售评论、视频观点和社区吐槽里的偏差。"
         )
     elif marketplace_review_items and (video_items or community_items):
         deep_dive.append(
@@ -1194,6 +1258,10 @@ def _build_product_compare_v2_review_deep_dive(
     elif marketplace_review_items:
         deep_dive.append(
             f"信号结构：当前主要依赖 {len(marketplace_review_items)} 条零售评论，适合看买家满意度和品控摩擦，但缺少独立评测与社区校准。"
+        )
+    elif editorial_items:
+        deep_dive.append(
+            f"信号结构：当前主要依赖 {len(editorial_items)} 条专业评测/公开网页样本，适合判断产品定位和体验框架，但真实买家与社区反馈仍偏薄。"
         )
     elif video_items:
         deep_dive.append(
@@ -1224,6 +1292,7 @@ def _build_product_compare_v2_evidence_samples(
     marketplace_items: List[EvidenceItem],
     official_item: Optional[EvidenceItem],
     marketplace_review_items: List[EvidenceItem],
+    editorial_items: List[EvidenceItem],
     video_items: List[EvidenceItem],
     community_items: List[EvidenceItem],
 ) -> List[str]:
@@ -1240,6 +1309,7 @@ def _build_product_compare_v2_evidence_samples(
 
     review_samples = [
         *marketplace_review_items[:4],
+        *editorial_items[:4],
         *video_items[:4],
         *community_items[:4],
     ]
@@ -1248,7 +1318,12 @@ def _build_product_compare_v2_evidence_samples(
         excerpt = _review_excerpt_for_report(item, limit=180)
         if not excerpt:
             continue
-        source_label = "零售评论" if item.source_role == "review_marketplace" else item.platform
+        if item.source_role == "review_marketplace":
+            source_label = "零售评论"
+        elif item.source_role == "review_editorial":
+            source_label = "专业评测/公开网页"
+        else:
+            source_label = item.platform
         samples.append(
             f"{source_label}/{channel}：{_clean_review_text(item.title)}；摘录：{excerpt}；来源：{_display_url(item.url)}"
         )
@@ -2078,6 +2153,28 @@ class CommerceDecisionFlow(BaseFlow):
                     policy_id=policy_id,
                 )
             )
+        tasks.append(
+            CommerceTask(
+                category="reviews",
+                platform=PRODUCT_COMPARE_V2_EDITORIAL_REVIEW_PLATFORM,
+                query=f"{review_subject} professional editorial reviews buying guide long term pros cons complaints",
+                goal=(
+                    f"Collect professional editorial reviews, public buying-guide context, "
+                    f"and known-issue summaries for {review_subject} from the open web."
+                ),
+                max_results=PRODUCT_COMPARE_V2_EDITORIAL_REVIEW_SAMPLE_COUNT,
+                require_browser=False,
+                source_role="review_editorial",
+                strategy="policy_direct",
+                preferred_mcp_tools=(
+                    policy.preferred_mcp_tools.get("review_editorial", [])
+                    if policy is not None
+                    else ["editorial_web_review_search"]
+                ),
+                requested_by_user=False,
+                policy_id=policy_id,
+            )
+        )
         for platform in selected_video_reviews + selected_community_reviews:
             source_role = _review_source_role(platform)
             tasks.append(
@@ -2122,7 +2219,14 @@ class CommerceDecisionFlow(BaseFlow):
             requested_shopping_platforms=requested_price_shopping,
             requested_review_platforms=requested_reviews,
             unsupported_sources=unsupported_sources,
-            decision_focus=["price comparison", "video reviews", "community feedback", "official confirmation"],
+            decision_focus=[
+                "price comparison",
+                "retail reviews",
+                "review_editorial",
+                "video reviews",
+                "community feedback",
+                "official confirmation",
+            ],
             tasks=tasks,
         )
 
@@ -2441,6 +2545,11 @@ class CommerceDecisionFlow(BaseFlow):
             for item in evidence
             if _is_product_compare_v2_marketplace_review_item(item)
         }
+        collected_editorial_platforms = {
+            item.platform
+            for item in evidence
+            if _is_product_compare_v2_editorial_review_item(item)
+        }
         collected_community_platforms = {
             item.platform
             for item in evidence
@@ -2451,6 +2560,9 @@ class CommerceDecisionFlow(BaseFlow):
         ]
         planned_video_platforms = [
             task.platform for task in plan.tasks if task.source_role == "review_video"
+        ]
+        planned_editorial_platforms = [
+            task.platform for task in plan.tasks if task.source_role == "review_editorial"
         ]
         planned_community_platforms = [
             task.platform for task in plan.tasks if task.source_role == "review_community"
@@ -2546,6 +2658,25 @@ class CommerceDecisionFlow(BaseFlow):
                     strategy="policy_direct",
                     policy_id=plan.policy_id,
                     requested_by_user=platform in plan.requested_review_platforms,
+                )
+            )
+        for platform in planned_editorial_platforms:
+            if (
+                platform in collected_editorial_platforms
+                or (platform, "review_editorial") in attempted_platform_roles
+            ):
+                continue
+            followups.append(
+                CommerceTask(
+                    category="reviews",
+                    platform=platform,
+                    query=f"{task_subject} professional editorial reviews buying guide long term pros cons complaints",
+                    goal=f"Collect professional editorial reviews, public buying-guide context, and known-issue summaries for {plan.product_name} from the open web.",
+                    max_results=PRODUCT_COMPARE_V2_EDITORIAL_REVIEW_SAMPLE_COUNT,
+                    require_browser=False,
+                    source_role="review_editorial",
+                    strategy="policy_direct",
+                    policy_id=plan.policy_id,
                 )
             )
         for platform in planned_community_platforms:
@@ -2763,12 +2894,13 @@ class CommerceDecisionFlow(BaseFlow):
         self,
         product_name: str,
         marketplace_review_items: List[EvidenceItem],
+        editorial_items: List[EvidenceItem],
         video_items: List[EvidenceItem],
         community_items: List[EvidenceItem],
         *,
         limit: int = 6,
     ) -> List[str]:
-        review_items = [*marketplace_review_items, *video_items, *community_items]
+        review_items = [*marketplace_review_items, *editorial_items, *video_items, *community_items]
         if not review_items:
             return []
 
@@ -2783,9 +2915,10 @@ class CommerceDecisionFlow(BaseFlow):
         notes = [
             f"Review sources: {', '.join(f'{platform}={count}' for platform, count in sorted(grouped_sources.items()))}.",
             f"Retail customer review samples: {len(marketplace_review_items)}.",
+            f"Editorial/professional web samples: {len(editorial_items)}.",
             f"Video review samples: {len(video_items)}.",
             f"Community samples: {len(community_items)}.",
-            "Separate retail buyer ratings, reviewer opinions, community complaints, and ownership friction.",
+            "Separate retail buyer ratings, professional/editorial framing, reviewer opinions, community complaints, and ownership friction.",
         ]
         has_model_mismatch = _has_variant_mismatch_noise(
             product_name,
@@ -2862,12 +2995,16 @@ class CommerceDecisionFlow(BaseFlow):
         marketplace_review_items = [
             item for item in evidence if _is_product_compare_v2_marketplace_review_item(item)
         ]
+        editorial_items = [
+            item for item in evidence if _is_product_compare_v2_editorial_review_item(item)
+        ]
         community_items = [
             item for item in evidence if _is_product_compare_v2_community_review_item(item)
         ]
         review_highlights = await self._build_product_compare_v2_review_highlights(
             plan.product_name,
             marketplace_review_items,
+            editorial_items,
             video_items,
             community_items,
             limit=6,
@@ -2881,6 +3018,9 @@ class CommerceDecisionFlow(BaseFlow):
         ]
         planned_video_platforms = [
             task.platform for task in plan.tasks if task.source_role == "review_video"
+        ]
+        planned_editorial_platforms = [
+            task.platform for task in plan.tasks if task.source_role == "review_editorial"
         ]
         planned_community_platforms = [
             task.platform for task in plan.tasks if task.source_role == "review_community"
@@ -2898,6 +3038,7 @@ class CommerceDecisionFlow(BaseFlow):
         collected_marketplace_review_platforms = {
             item.platform for item in marketplace_review_items
         }
+        collected_editorial_platforms = {item.platform for item in editorial_items}
         collected_video_platforms = {item.platform for item in video_items}
         collected_community_platforms = {item.platform for item in community_items}
         unsupported_sources = list(plan.unsupported_sources)
@@ -2925,6 +3066,9 @@ class CommerceDecisionFlow(BaseFlow):
         for platform in planned_video_platforms:
             if platform not in collected_video_platforms:
                 missing_bits.append(f"{platform} 评测样本")
+        for platform in planned_editorial_platforms:
+            if platform not in collected_editorial_platforms:
+                missing_bits.append(f"{platform} 专业评测/公开网页样本")
         for platform in planned_community_platforms:
             if platform not in collected_community_platforms:
                 missing_bits.append(f"{platform} 社区样本")
@@ -2940,6 +3084,12 @@ class CommerceDecisionFlow(BaseFlow):
         total_requirements += len(planned_video_platforms)
         satisfied_requirements += sum(
             1 for platform in planned_video_platforms if platform in collected_video_platforms
+        )
+        total_requirements += len(planned_editorial_platforms)
+        satisfied_requirements += sum(
+            1
+            for platform in planned_editorial_platforms
+            if platform in collected_editorial_platforms
         )
         total_requirements += len(planned_community_platforms)
         satisfied_requirements += sum(
@@ -2966,11 +3116,13 @@ class CommerceDecisionFlow(BaseFlow):
         official_baseline = official_item.price if official_item and official_item.price else None
         review_coverage_fact = _build_product_compare_v2_review_coverage_fact(
             marketplace_review_items,
+            editorial_items,
             video_items,
             community_items,
         )
         review_coverage_parts = _product_compare_v2_review_coverage_parts(
             marketplace_review_items,
+            editorial_items,
             video_items,
             community_items,
         )
@@ -3099,6 +3251,11 @@ class CommerceDecisionFlow(BaseFlow):
                 source_notes.append(
                     f"{platform} 当前没有拿到足够可信且与目标商品匹配的社区样本。"
                 )
+        for platform in planned_editorial_platforms:
+            if platform not in collected_editorial_platforms:
+                source_notes.append(
+                    f"{platform} 当前没有拿到足够可信且与目标商品匹配的专业评测或公开网页样本。"
+                )
         for platform in planned_video_platforms:
             if platform not in collected_video_platforms:
                 source_notes.append(
@@ -3159,6 +3316,9 @@ class CommerceDecisionFlow(BaseFlow):
         for platform in planned_video_platforms:
             if platform not in collected_video_platforms:
                 next_actions.append(f"补充 {platform} 公开评测样本，核对长期体验与高频槽点。")
+        for platform in planned_editorial_platforms:
+            if platform not in collected_editorial_platforms:
+                next_actions.append(f"补充 {platform} 专业评测/购买指南样本，校准视频和社区反馈。")
         for platform in planned_marketplace_review_platforms:
             if platform not in collected_marketplace_review_platforms:
                 next_actions.append(f"补充 {platform} 商品页评论或评分摘要，校验买家满意度、品控和售后摩擦。")
@@ -3174,10 +3334,12 @@ class CommerceDecisionFlow(BaseFlow):
         sample_coverage = _build_product_compare_v2_sample_coverage(
             planned_marketplaces=planned_marketplaces,
             planned_marketplace_review_platforms=planned_marketplace_review_platforms,
+            planned_editorial_platforms=planned_editorial_platforms,
             planned_video_platforms=planned_video_platforms,
             planned_community_platforms=planned_community_platforms,
             marketplace_items=clean_marketplace_items,
             marketplace_review_items=marketplace_review_items,
+            editorial_items=editorial_items,
             official_item=official_item,
             video_items=video_items,
             community_items=community_items,
@@ -3190,11 +3352,13 @@ class CommerceDecisionFlow(BaseFlow):
         evidence_matrix = _build_product_compare_v2_evidence_matrix(
             planned_marketplaces=planned_marketplaces,
             planned_marketplace_review_platforms=planned_marketplace_review_platforms,
+            planned_editorial_platforms=planned_editorial_platforms,
             planned_video_platforms=planned_video_platforms,
             planned_community_platforms=planned_community_platforms,
             clean_marketplace_items=clean_marketplace_items,
             official_item=official_item,
             marketplace_review_items=marketplace_review_items,
+            editorial_items=editorial_items,
             video_items=video_items,
             community_items=community_items,
         )
@@ -3202,6 +3366,7 @@ class CommerceDecisionFlow(BaseFlow):
             product_name=plan.product_name,
             review_highlights=review_highlights,
             marketplace_review_items=marketplace_review_items,
+            editorial_items=editorial_items,
             video_items=video_items,
             community_items=community_items,
         )
@@ -3209,6 +3374,7 @@ class CommerceDecisionFlow(BaseFlow):
             marketplace_items=clean_marketplace_items,
             official_item=official_item,
             marketplace_review_items=marketplace_review_items,
+            editorial_items=editorial_items,
             video_items=video_items,
             community_items=community_items,
         )

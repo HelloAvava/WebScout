@@ -23,6 +23,7 @@ from app.commerce.policy import (
 )
 from app.logger import logger
 from app.mcp.commerce_public_server import (
+    _collect_editorial_review_observations,
     _collect_marketplace_observations,
     _collect_marketplace_review_observations,
     _collect_official_observations,
@@ -728,6 +729,7 @@ def minimum_model_match_score(
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE and task.source_role in {
         "review_video",
         "review_community",
+        "review_editorial",
     }:
         return 50
     return 60
@@ -1150,6 +1152,7 @@ def should_collect_mcp(
         return task.source_role in {
             "marketplace",
             "review_community",
+            "review_editorial",
             "official",
         }
     return True
@@ -1803,6 +1806,11 @@ class CommerceResearchExecutor:
                 )
             if task.source_role == "review_community" and task.platform == "Reddit":
                 return await _collect_reddit_review_observations(
+                    task.query,
+                    max_results=task.max_results,
+                )
+            if task.source_role == "review_editorial":
+                return await _collect_editorial_review_observations(
                     task.query,
                     max_results=task.max_results,
                 )

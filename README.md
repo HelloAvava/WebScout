@@ -2,12 +2,12 @@
 
 WebScout is a commerce-focused browser agent for product research and buying-decision reports. It plans a bounded investigation, collects public evidence from shopping sites and review channels, and produces a structured report that separates confirmed facts from partial, blocked, or low-confidence sources.
 
-The current main workflow is `product_compare_v2`: a policy-driven product comparison flow for prices, official baselines, retail customer review signals, YouTube feedback, Reddit discussion, and SKU caveats.
+The current main workflow is `product_compare_v2`: a policy-driven product comparison flow for prices, official baselines, retail customer review signals, professional/editorial open-web reviews, YouTube feedback, Reddit discussion, and SKU caveats.
 
 ## What It Does
 
 - Identifies product brand, family, category, model, and variant hints from a free-form prompt.
-- Builds a source-aware research plan with separate tasks for prices, official specs, retail reviews, video reviews, and community feedback.
+- Builds a source-aware research plan with separate tasks for prices, official specs, retail reviews, professional/editorial reviews, video reviews, and community feedback.
 - Collects evidence through direct public collectors, optional MCP tools, and search/browser fallback.
 - Handles configuration-sensitive products by narrowing broad prompts to representative comparable models when needed.
 - Preserves blocked sources, login walls, rate limits, and low-confidence observations as report diagnostics.
@@ -21,7 +21,7 @@ flowchart TB
   F --> P["Planner<br/>商品识别、来源策略、任务图"]
   P --> PL["CommercePlan<br/>tasks + comparison_subject"]
   PL --> E["CommerceResearchExecutor<br/>采集与诊断"]
-  E --> D["Direct public collectors<br/>价格、官方、零售评论、YouTube、Reddit"]
+  E --> D["Direct public collectors<br/>价格、官方、零售评论、专业评测、YouTube、Reddit"]
   E --> M["CommerceMCPBridge<br/>可选 MCP 工具选择与归一化"]
   E --> B["CommerceBrowserController<br/>公开浏览器 / 本机会话浏览器"]
   D --> EV["EvidenceItem / PriceObservation / diagnostics"]
@@ -141,7 +141,7 @@ Policy-driven product comparison:
 python run_commerce.py \
   --execution-profile product_compare_v2 \
   --browser-session-mode public_only \
-  --prompt "Compare iPhone 16 prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals plus YouTube and Reddit real-user feedback."
+  --prompt "Compare iPhone 16 prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals, professional editorial reviews, plus YouTube and Reddit real-user feedback."
 ```
 
 Representative-model example for broad product families:
@@ -150,7 +150,7 @@ Representative-model example for broad product families:
 python run_commerce.py \
   --execution-profile product_compare_v2 \
   --browser-session-mode public_only \
-  --prompt "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals plus YouTube and Reddit real-user feedback; use public sources only and produce a detailed Chinese decision report with evidence, SKU caveats, price confidence, and buying recommendation."
+  --prompt "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals, professional editorial reviews, plus YouTube and Reddit real-user feedback; use public sources only and produce a detailed Chinese decision report with evidence, SKU caveats, price confidence, and buying recommendation."
 ```
 
 ## MCP
@@ -199,6 +199,7 @@ The generated report is designed to be honest about evidence quality. A good rep
 - comparable price observations with SKU/configuration caveats,
 - official baseline or spec references when available,
 - retail customer review signals,
+- professional/editorial open-web review samples,
 - YouTube and Reddit feedback samples,
 - unsupported or blocked sources,
 - confidence notes and next-step recommendations.

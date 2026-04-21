@@ -45,6 +45,7 @@ from app.config import config
 from app.mcp import commerce_public_server
 from app.mcp.commerce_public_server import (
     _clean_product_query,
+    _collect_editorial_review_observations,
     _collect_marketplace_observations,
     _collect_marketplace_review_observations,
     _collect_reddit_review_observations,
@@ -60,6 +61,8 @@ from app.mcp.commerce_public_server import (
     _extract_samsung_official_price_from_html,
     _extract_youtube_mirror_observations,
     _extract_walmart_mirror_observations,
+    _editorial_review_queries,
+    _is_editorial_review_result,
     _matches_product_hint,
     _marketplace_direct_keyword,
     _marketplace_search_query,
@@ -3581,6 +3584,135 @@ async def test_product_compare_v2_direct_marketplace_collection_caps_price_resul
     await executor._collect_product_compare_v2_observations(task)
 
     assert captured["max_results"] == 2
+
+
+@pytest.mark.asyncio
+async def test_product_compare_v2_direct_editorial_review_collection(monkeypatch):
+    executor = CommerceResearchExecutor(execution_profile="product_compare_v2")
+    task = CommerceTask(
+        category="reviews",
+        platform="Editorial Web",
+        query="Pixel 9 editorial reviews buying guide issues",
+        goal="collect professional editorial review evidence",
+        source_role="review_editorial",
+        strategy="policy_direct",
+        max_results=4,
+    )
+
+    async def fake_collect_editorial(query: str, *, max_results: int = 4):
+        assert "Pixel 9" in query
+        assert max_results == 4
+        return [
+            {
+                "platform": "Editorial Web",
+                "title": "Pixel 9 review: a reliable Android phone",
+                "url": "https://www.theverge.com/pixel-9-review",
+                "snippet": "Review notes camera quality, battery life, and charging tradeoffs.",
+                "extracted_text": "The Pixel 9 review praises camera consistency but flags charging speed.",
+                "source_type": "media",
+                "credibility": 0.82,
+                "metadata": {
+                    "strategy": "editorial_search_result",
+                    "source_domain": "theverge.com",
+                },
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.commerce.executor._collect_editorial_review_observations",
+        fake_collect_editorial,
+    )
+
+    evidence = await executor._collect_product_compare_v2_observations(task)
+
+    assert evidence[0]["platform"] == "Editorial Web"
+    assert evidence[0]["source_type"] == "media"
+
+
+def test_editorial_review_result_accepts_known_review_domain():
+    result = SearchResult(
+        position=1,
+        url="https://www.theverge.com/pixel-9-review",
+        title="Google Pixel 9 review: dependable camera phone",
+        description="A professional review covering camera, battery, and software.",
+        source="duckduckgo",
+    )
+
+    assert _is_editorial_review_result(result, "Google Pixel 9")
+
+
+def test_editorial_review_result_rejects_search_aggregator_pages():
+    result = SearchResult(
+        position=1,
+        url="https://image.baidu.com/search/index?word=%22Pixel%209%22%20review",
+        title='"Pixel 9" professional review - Baidu Images',
+        description="Image search result page for Pixel 9 reviews.",
+        source="baidu",
+    )
+
+    assert not _is_editorial_review_result(result, "Google Pixel 9")
+
+
+def test_editorial_review_result_rejects_adjacent_phone_variant():
+    result = SearchResult(
+        position=1,
+        url="https://www.dxomark.com/google-pixel-9-pro-xl-camera-test/",
+        title="Google Pixel 9 Pro XL Camera test",
+        description="Professional review and test results for Pixel 9 Pro XL camera.",
+        source="duckduckgo",
+    )
+
+    assert not _is_editorial_review_result(result, "Google Pixel 9")
+
+
+def test_editorial_review_queries_add_targeted_media_site_searches():
+    queries = _editorial_review_queries(
+        "Pixel 9 professional editorial reviews buying guide"
+    )
+
+    assert any("site:theverge.com" in query for query in queries)
+    assert any("site:notebookcheck.net" in query for query in queries)
+    assert all('"Pixel 9"' in query for query in queries)
+    assert all("-site:" not in query for query in queries)
+
+
+@pytest.mark.asyncio
+async def test_editorial_review_collection_builds_media_observations(monkeypatch):
+    async def fake_execute_search(query: str, *, num_results: int, lang: str = "en", country: str = "us"):
+        assert "Pixel 9" in query
+        return [
+            SearchResult(
+                position=1,
+                url="https://www.theverge.com/pixel-9-review",
+                title="Google Pixel 9 review: camera consistency wins",
+                description="The Pixel 9 review praises the camera but notes charging speed.",
+                source="duckduckgo",
+            )
+        ]
+
+    async def fake_fetch_page_text(url: str):
+        assert "theverge.com" in url
+        return "Google Pixel 9 review with camera, battery, Tensor, and charging notes."
+
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._execute_search",
+        fake_execute_search,
+    )
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._fetch_page_text",
+        fake_fetch_page_text,
+    )
+
+    observations = await _collect_editorial_review_observations(
+        "Google Pixel 9 editorial reviews",
+        max_results=3,
+    )
+
+    assert len(observations) == 1
+    assert observations[0]["platform"] == "Editorial Web"
+    assert observations[0]["source_type"] == "media"
+    assert observations[0]["metadata"]["strategy"] == "editorial_search_result"
+    assert observations[0]["metadata"]["source_domain"] == "theverge.com"
 
 
 def test_product_compare_v2_accepts_walmart_generic_product_search_price():

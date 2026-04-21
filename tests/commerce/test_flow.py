@@ -14,10 +14,32 @@ from app.flow.commerce import (
     CommerceDecisionFlow,
     _build_review_highlights,
     _is_product_compare_v2_community_review_item,
+    _is_product_compare_v2_editorial_review_item,
     _is_product_compare_v2_marketplace_review_item,
     _preferred_diagnostic_reason,
     _review_excerpt_for_report,
 )
+
+
+def _editorial_review_item(product: str = "Pixel 9") -> EvidenceItem:
+    return EvidenceItem(
+        category="reviews",
+        platform="Editorial Web",
+        title=f"{product} review: expert verdict and buying advice",
+        url=f"https://www.theverge.com/{product.lower().replace(' ', '-')}-review",
+        snippet="Professional review covering daily use, price context, strengths, and caveats.",
+        extracted_text=(
+            f"{product} expert review summarizes performance, battery, display, "
+            "pricing context, pros, cons, and long-term ownership caveats."
+        ),
+        source_type="media",
+        source_role="review_editorial",
+        credibility=0.82,
+        metadata={
+            "strategy": "editorial_search_result",
+            "source_domain": "theverge.com",
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -422,6 +444,7 @@ def test_product_compare_v2_followups_retry_missing_review_sources():
         ("Target", "review_marketplace"),
         ("B&H", "review_marketplace"),
         ("Newegg", "review_marketplace"),
+        ("Editorial Web", "review_editorial"),
         ("YouTube", "review_video"),
         ("Reddit", "review_community"),
     }
@@ -812,6 +835,24 @@ async def test_product_compare_v2_plan_uses_brand_policy_without_llm(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_product_compare_v2_plan_adds_editorial_web_review_layer():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare Pixel 9 prices and summarize whether real users and reviewers still recommend it."
+    )
+
+    editorial_tasks = [
+        task for task in plan.tasks if task.source_role == "review_editorial"
+    ]
+    assert len(editorial_tasks) == 1
+    assert editorial_tasks[0].platform == "Editorial Web"
+    assert "professional" in editorial_tasks[0].goal.lower()
+    assert "Pixel 9" in editorial_tasks[0].query
+    assert "review_editorial" in plan.decision_focus
+
+
+@pytest.mark.asyncio
 async def test_product_compare_v2_plan_preserves_iphone_number_with_colon_prompt():
     flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
 
@@ -929,6 +970,23 @@ async def test_product_compare_v2_review_only_retail_platforms_do_not_expand_pri
         and task.platform in {"Walmart", "Target", "B&H", "Newegg"}
         for task in plan.tasks
     )
+
+
+def test_product_compare_v2_editorial_review_item_accepts_media_source():
+    item = EvidenceItem(
+        category="reviews",
+        platform="Editorial Web",
+        title="Pixel 9 review: still a strong camera phone",
+        url="https://www.theverge.com/pixel-9-review",
+        snippet="The review praises camera consistency but notes charging speed.",
+        extracted_text="Pixel 9 review sample with battery, camera, and performance notes.",
+        source_type="media",
+        source_role="review_editorial",
+        credibility=0.82,
+        metadata={"strategy": "editorial_search_result"},
+    )
+
+    assert _is_product_compare_v2_editorial_review_item(item)
 
 
 @pytest.mark.asyncio
@@ -1143,6 +1201,21 @@ async def test_product_compare_v2_report_marks_generic_macbook_cross_config_quot
         ),
         EvidenceItem(
             category="reviews",
+            platform="Editorial Web",
+            title="MacBook Pro review: expert verdict and buying advice",
+            url="https://www.theverge.com/macbook-pro-review",
+            snippet="Professional review covering display, chip tiers, battery, price context, and caveats.",
+            extracted_text="MacBook Pro expert review summarizes display quality, M4 chip tiers, battery, pricing context, pros, cons, and configuration caveats.",
+            source_type="media",
+            source_role="review_editorial",
+            credibility=0.82,
+            metadata={
+                "strategy": "editorial_search_result",
+                "source_domain": "theverge.com",
+            },
+        ),
+        EvidenceItem(
+            category="reviews",
             platform="YouTube",
             title="MacBook Pro review",
             url="https://www.youtube.com/watch?v=macbookpro",
@@ -1256,6 +1329,7 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
                 amount=1599.0,
             ),
         ),
+        _editorial_review_item("MacBook Pro"),
         EvidenceItem(
             category="reviews",
             platform="YouTube",
@@ -1453,6 +1527,7 @@ async def test_product_compare_v2_complete_report_requires_marketplace_official_
             credibility=0.83,
             metadata={"strategy": "marketplace_review_page"},
         ),
+        _editorial_review_item("Pixel 9"),
         EvidenceItem(
             category="reviews",
             platform="YouTube",
@@ -1599,6 +1674,7 @@ async def test_product_compare_v2_complete_report_when_only_one_marketplace_was_
                 amount=799.0,
             ),
         ),
+        _editorial_review_item("Pixel 9"),
         EvidenceItem(
             category="reviews",
             platform="YouTube",
@@ -1716,6 +1792,7 @@ async def test_product_compare_v2_complete_report_flags_degraded_marketplace_quo
                 amount=719.99,
             ),
         ),
+        _editorial_review_item("Galaxy S25"),
         EvidenceItem(
             category="reviews",
             platform="YouTube",
@@ -1820,6 +1897,7 @@ async def test_product_compare_v2_report_does_not_count_degraded_only_marketplac
                 amount=699.0,
             ),
         ),
+        _editorial_review_item("iPhone 16"),
         EvidenceItem(
             category="reviews",
             platform="YouTube",

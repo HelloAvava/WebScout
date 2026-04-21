@@ -4,7 +4,7 @@ Updated: 2026-04-21
 
 The commerce browser flow is a dedicated OpenManus path for product research, public-web collection, and purchase-decision reports. It is not just a prompt wrapper around a general browser agent. The implementation separates product identity, source policy, evidence collection, coverage review, and final report synthesis into testable modules.
 
-The current goal is to collect prices, official baselines, retail reviews, video reviews, and community feedback from public pages, public APIs, optional MCP tools, and search/browser fallback. The report must distinguish confirmed evidence from partial evidence and blocked or missing sources.
+The current goal is to collect prices, official baselines, retail reviews, professional/editorial open-web reviews, video reviews, and community feedback from public pages, public APIs, optional MCP tools, and search/browser fallback. The report must distinguish confirmed evidence from partial evidence and blocked or missing sources.
 
 ## Profiles
 
@@ -23,7 +23,7 @@ flowchart TB
   F --> P["Planner<br/>identity, source policy, task graph"]
   P --> PL["CommercePlan<br/>tasks + comparison_subject"]
   PL --> E["CommerceResearchExecutor<br/>collection and diagnostics"]
-  E --> D["Direct public collectors<br/>prices, official, retail reviews, YouTube, Reddit"]
+  E --> D["Direct public collectors<br/>prices, official, retail reviews, editorial web, YouTube, Reddit"]
   E --> M["CommerceMCPBridge<br/>optional MCP selection and normalization"]
   E --> B["CommerceBrowserController<br/>public browser / session browser"]
   D --> EV["EvidenceItem / PriceObservation / diagnostics"]
@@ -83,7 +83,7 @@ sequenceDiagram
 | `app/commerce/policy.py` | Product identity, brand/category source policies, configuration-sensitive family rules |
 | `app/commerce/models.py` | Pydantic contracts for plans, tasks, evidence, prices, diagnostics, and reports |
 | `app/commerce/executor.py` | Runs each task through direct collectors, MCP, and search/browser fallback |
-| `app/mcp/commerce_public_server.py` | Built-in public collectors for marketplaces, official sources, retail reviews, YouTube, and Reddit |
+| `app/mcp/commerce_public_server.py` | Built-in public collectors for marketplaces, official sources, retail reviews, editorial web reviews, YouTube, and Reddit |
 | `app/commerce/mcp_bridge.py` | Optional MCP tool discovery, scoring, invocation, normalization, and diagnostics |
 | `app/commerce/browser.py` | Runtime browser selection: `public_only`, `auto`, `local_cdp` |
 | `app/commerce/grounding.py` | DOM/vision grounding helper for brittle pages, not a login or CAPTCHA bypass |
@@ -151,7 +151,7 @@ V2 planning follows this shape:
 2. Resolve brand/category source policy.
 3. Detect configuration-sensitive families such as MacBook Pro, MacBook Air, laptops, and tablets.
 4. If the user only names a broad family, choose a representative `comparison_subject`.
-5. Create separate tasks for prices, official baseline, retail reviews, video reviews, and community feedback.
+5. Create separate tasks for prices, official baseline, retail reviews, professional/editorial reviews, video reviews, and community feedback.
 6. Attach source, query, allowed domains, and expected output to each task.
 
 Current representative model examples:
@@ -184,6 +184,7 @@ Direct collectors are first priority for `product_compare_v2` because they retur
 - Marketplace prices from public Amazon, Best Buy, Walmart, Target, B&H, Newegg, and similar results when accessible.
 - Official baselines from brand stores such as Apple, Google, Samsung, and Microsoft.
 - Retail review snippets from Amazon, Best Buy, Walmart, Target, B&H, and Newegg when public pages expose them.
+- Professional/editorial open-web review results from sources such as The Verge, Wired, CNET, PCMag, Tom's Guide, TechRadar, Engadget, GSMArena, Notebookcheck, RTINGS, MacRumors, 9to5Mac, Ars Technica, Consumer Reports, Wirecutter/NYTimes, DXOMARK, Trusted Reviews, Expert Reviews, and Reviewed when public search exposes matching pages.
 - YouTube public search results and metadata.
 - Reddit public search/JSON paths.
 
@@ -217,7 +218,7 @@ These modes do not crack CAPTCHAs or break through login requirements. Amazon, B
 - Representative model or user-specified configuration.
 - Price table with seller, model/configuration, price, confidence, and comparability caveats.
 - Official baseline for discount/premium checks.
-- Retail review, YouTube, and Reddit sentiment summaries.
+- Retail review, professional/editorial web, YouTube, and Reddit sentiment summaries.
 - Source and sample counts.
 - Blocked sources, degraded samples, and next-step recommendations.
 
@@ -237,7 +238,7 @@ V2 phone example:
 python run_commerce.py \
   --execution-profile product_compare_v2 \
   --browser-session-mode public_only \
-  --prompt "Compare iPhone 16 prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals plus YouTube and Reddit real-user feedback."
+  --prompt "Compare iPhone 16 prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals, professional editorial reviews, plus YouTube and Reddit real-user feedback."
 ```
 
 V2 laptop representative-model example:
@@ -246,7 +247,7 @@ V2 laptop representative-model example:
 python run_commerce.py \
   --execution-profile product_compare_v2 \
   --browser-session-mode public_only \
-  --prompt "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals plus YouTube and Reddit real-user feedback; use public sources only and produce a detailed Chinese decision report with evidence, SKU caveats, price confidence, and buying recommendation."
+  --prompt "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; summarize public retail customer review signals, professional editorial reviews, plus YouTube and Reddit real-user feedback; use public sources only and produce a detailed Chinese decision report with evidence, SKU caveats, price confidence, and buying recommendation."
 ```
 
 If a prompt is underspecified, V2 first narrows to one representative model. If the user wants multiple SKU comparisons, the prompt should list the target size, chip, memory, storage, and color.

@@ -16,7 +16,7 @@ from app.tool.mcp import MCPClientTool, MCPClients
 CATEGORY_TOOL_KEYWORDS = {
     "pricing": ["price", "pricing", "offer", "deal", "catalog", "product", "search", "benchmark"],
     "official": ["official", "spec", "specification", "product", "search"],
-    "reviews": ["review", "rating", "video", "community", "search"],
+    "reviews": ["review", "rating", "video", "community", "editorial", "professional", "search"],
     "social": ["social", "community", "reddit", "forum", "comment", "search"],
 }
 TOOL_PRIORITY_HINTS = {
@@ -34,6 +34,7 @@ TOOL_PRIORITY_HINTS = {
     },
     "reviews": {
         "marketplace_customer_review_search": 7,
+        "editorial_web_review_search": 6,
         "youtube_video_review_search": 6,
         "scrape_as_markdown": 2,
     },
@@ -65,6 +66,11 @@ PLATFORM_STRUCTURED_TOOL_HINTS = {
     "reddit": [
         "web_data_reddit_posts",
         "reddit_community_review_search",
+    ],
+    "editorial web": [
+        "editorial_web_review_search",
+        "search_engine",
+        "scrape_as_markdown",
     ],
 }
 STRUCTURED_MCP_SERVER_HINTS = ("brightdata", "bright_data")

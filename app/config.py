@@ -1,8 +1,9 @@
 import json
+import os
 import threading
 import tomllib
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +62,10 @@ class SearchSettings(BaseModel):
 
 
 class RunflowSettings(BaseModel):
+    flow_type: Literal["planning", "commerce_decision"] = Field(
+        default="planning",
+        description="Execution flow used by run_flow.py",
+    )
     use_data_analysis_agent: bool = Field(
         default=False, description="Enable data analysis agent in run flow"
     )
@@ -70,6 +75,10 @@ class BrowserSettings(BaseModel):
     headless: bool = Field(False, description="Whether to run browser in headless mode")
     disable_security: bool = Field(
         True, description="Disable browser security features"
+    )
+    session_mode: Literal["auto", "public_only", "local_cdp"] = Field(
+        "auto",
+        description="Browser session strategy for commerce tasks",
     )
     extra_chromium_args: List[str] = Field(
         default_factory=list, description="Extra arguments to pass to the browser"
@@ -87,7 +96,7 @@ class BrowserSettings(BaseModel):
         None, description="Proxy settings for the browser"
     )
     max_content_length: int = Field(
-        2000, description="Maximum length for content retrieval operations"
+        8000, description="Maximum length for content retrieval operations"
     )
 
 
@@ -133,6 +142,17 @@ class MCPServerConfig(BaseModel):
     args: List[str] = Field(
         default_factory=list, description="Arguments for stdio command"
     )
+    env: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variables for stdio MCP servers",
+    )
+    cwd: Optional[str] = Field(
+        None, description="Working directory for stdio MCP servers"
+    )
+    required_env_any: List[str] = Field(
+        default_factory=list,
+        description="Skip this MCP server unless at least one of these env vars is set",
+    )
 
 
 class MCPSettings(BaseModel):
@@ -160,11 +180,40 @@ class MCPSettings(BaseModel):
                 servers = {}
 
                 for server_id, server_config in data.get("mcpServers", {}).items():
+                    if not isinstance(server_config, dict):
+                        continue
+                    if server_config.get("disabled") is True:
+                        continue
+                    required_env_any = [
+                        str(name)
+                        for name in (server_config.get("required_env_any") or [])
+                        if str(name).strip()
+                    ]
+                    if required_env_any and not any(
+                        os.environ.get(name) for name in required_env_any
+                    ):
+                        continue
+                    server_type = server_config.get("type")
+                    if server_type not in {"sse", "stdio"}:
+                        # Skip foreign MCP config entries that do not follow the
+                        # OpenManus transport schema instead of failing startup.
+                        continue
+                    if server_type == "sse" and not server_config.get("url"):
+                        continue
+                    if server_type == "stdio" and not server_config.get("command"):
+                        continue
                     servers[server_id] = MCPServerConfig(
-                        type=server_config["type"],
+                        type=server_type,
                         url=server_config.get("url"),
                         command=server_config.get("command"),
                         args=server_config.get("args", []),
+                        env={
+                            str(k): str(v)
+                            for k, v in (server_config.get("env") or {}).items()
+                            if v is not None
+                        },
+                        cwd=server_config.get("cwd"),
+                        required_env_any=required_env_any,
                     )
                 return servers
         except Exception as e:
@@ -291,10 +340,9 @@ class Config:
         else:
             sandbox_settings = SandboxSettings()
         daytona_config = raw_config.get("daytona", {})
+        daytona_settings = None
         if daytona_config:
             daytona_settings = DaytonaSettings(**daytona_config)
-        else:
-            daytona_settings = DaytonaSettings()
 
         mcp_config = raw_config.get("mcp", {})
         mcp_settings = None
@@ -337,12 +385,20 @@ class Config:
         return self._config.sandbox
 
     @property
-    def daytona(self) -> DaytonaSettings:
+    def daytona(self) -> Optional[DaytonaSettings]:
         return self._config.daytona_config
 
     @property
     def browser_config(self) -> Optional[BrowserSettings]:
         return self._config.browser_config
+
+    def set_browser_session_mode(
+        self, session_mode: Literal["auto", "public_only", "local_cdp"]
+    ) -> None:
+        if self._config.browser_config is None:
+            self._config.browser_config = BrowserSettings(session_mode=session_mode)
+        else:
+            self._config.browser_config.session_mode = session_mode
 
     @property
     def search_config(self) -> Optional[SearchSettings]:

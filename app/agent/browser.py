@@ -8,7 +8,6 @@ from app.logger import logger
 from app.prompt.browser import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import Message, ToolChoice
 from app.tool import BrowserUseTool, Terminate, ToolCollection
-from app.tool.sandbox.sb_browser_tool import SandboxBrowserTool
 
 
 # Avoid circular import if BrowserAgent needs BrowserContextHelper
@@ -21,12 +20,33 @@ class BrowserContextHelper:
         self.agent = agent
         self._current_base64_image: Optional[str] = None
 
+    def _format_recent_results(self) -> str:
+        recent_results = []
+        for message in reversed(self.agent.memory.messages):
+            if message.role == "tool" and message.content:
+                recent_results.append(message.content.strip())
+            if len(recent_results) == 2:
+                break
+
+        if not recent_results:
+            return ""
+
+        return "\n- Recent tool results:\n" + "\n".join(
+            f"  * {result[:500]}" for result in reversed(recent_results)
+        )
+
     async def get_browser_state(self) -> Optional[dict]:
         browser_tool = self.agent.available_tools.get_tool(BrowserUseTool().name)
         if not browser_tool:
-            browser_tool = self.agent.available_tools.get_tool(
-                SandboxBrowserTool().name
-            )
+            try:
+                from app.tool.sandbox.sb_browser_tool import SandboxBrowserTool
+
+                browser_tool = self.agent.available_tools.get_tool(
+                    SandboxBrowserTool().name
+                )
+            except Exception as e:
+                logger.debug(f"Sandbox browser tool unavailable: {str(e)}")
+                browser_tool = None
         if not browser_tool or not hasattr(browser_tool, "get_current_state"):
             logger.warning("BrowserUseTool not found or doesn't have get_current_state")
             return None
@@ -48,19 +68,38 @@ class BrowserContextHelper:
         """Gets browser state and formats the browser prompt."""
         browser_state = await self.get_browser_state()
         url_info, tabs_info, content_above_info, content_below_info = "", "", "", ""
-        results_info = ""  # Or get from agent if needed elsewhere
+        state_snapshot = "No browser state available yet."
+        results_info = self._format_recent_results()
 
         if browser_state and not browser_state.get("error"):
             url_info = f"\n   URL: {browser_state.get('url', 'N/A')}\n   Title: {browser_state.get('title', 'N/A')}"
             tabs = browser_state.get("tabs", [])
             if tabs:
                 tabs_info = f"\n   {len(tabs)} tab(s) available"
-            pixels_above = browser_state.get("pixels_above", 0)
-            pixels_below = browser_state.get("pixels_below", 0)
+            scroll_info = browser_state.get("scroll_info", {})
+            pixels_above = scroll_info.get("pixels_above", 0)
+            pixels_below = scroll_info.get("pixels_below", 0)
             if pixels_above > 0:
                 content_above_info = f" ({pixels_above} pixels)"
             if pixels_below > 0:
                 content_below_info = f" ({pixels_below} pixels)"
+
+            interactive_elements = browser_state.get("interactive_elements", "").strip()
+            if interactive_elements:
+                interactive_elements = interactive_elements[:6000]
+            else:
+                interactive_elements = "No indexed interactive elements available."
+
+            state_snapshot = (
+                "[Current state starts here]\n"
+                f"URL: {browser_state.get('url', 'N/A')}\n"
+                f"Title: {browser_state.get('title', 'N/A')}\n"
+                f"Tabs: {tabs if tabs else '[]'}\n"
+                "Interactive Elements:\n"
+                f"{interactive_elements}\n"
+                f"Scroll info: above={pixels_above}, below={pixels_below}\n"
+                "[Current state ends here]"
+            )
 
             if self._current_base64_image:
                 image_message = Message.user_message(
@@ -71,6 +110,7 @@ class BrowserContextHelper:
                 self._current_base64_image = None  # Consume the image after adding
 
         return NEXT_STEP_PROMPT.format(
+            state_snapshot_placeholder=state_snapshot,
             url_placeholder=url_info,
             tabs_placeholder=tabs_info,
             content_above_placeholder=content_above_info,

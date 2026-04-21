@@ -1,5 +1,7 @@
 import asyncio
+import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -197,6 +199,7 @@ class WebSearch(BaseTool):
         "bing": BingSearchEngine(),
     }
     content_fetcher: WebContentFetcher = WebContentFetcher()
+    _redirect_result_hosts = {"www.baidu.com", "m.baidu.com"}
 
     async def execute(
         self,
@@ -246,6 +249,14 @@ class WebSearch(BaseTool):
                 else "us"
             )
 
+        # When the query is predominantly Chinese and no explicit search locale
+        # is configured, prefer Chinese-language results instead of en/us defaults.
+        if not config.search_config and re.search(r"[\u4e00-\u9fff]", query):
+            if lang == "en":
+                lang = "zh"
+            if country == "us":
+                country = "cn"
+
         search_params = {"lang": lang, "country": country}
 
         # Try searching with retries when all engines fail
@@ -253,6 +264,15 @@ class WebSearch(BaseTool):
             results = await self._try_all_engines(query, num_results, search_params)
 
             if results:
+                results = await self._normalize_result_urls(results)
+                valid_results = [
+                    result
+                    for result in results
+                    if result.url.startswith(("http://", "https://"))
+                ]
+                if valid_results:
+                    results = valid_results
+
                 # Fetch content if requested
                 if fetch_content:
                     results = await self._fetch_content_for_results(results)
@@ -291,17 +311,37 @@ class WebSearch(BaseTool):
         self, query: str, num_results: int, search_params: Dict[str, Any]
     ) -> List[SearchResult]:
         """Try all search engines in the configured order."""
-        engine_order = self._get_engine_order()
+        engine_order = self._get_engine_order(query)
         failed_engines = []
+        required_site = self._query_site_constraint(query)
 
         for engine_name in engine_order:
             engine = self._search_engine[engine_name]
-            logger.info(f"🔎 Attempting search with {engine_name.capitalize()}...")
-            search_items = await self._perform_search_with_engine(
-                engine, query, num_results, search_params
-            )
+            try:
+                logger.info(f"🔎 Attempting search with {engine_name.capitalize()}...")
+                search_items = await self._perform_search_with_engine(
+                    engine, query, num_results, search_params
+                )
+            except Exception as exc:
+                failed_engines.append(engine_name)
+                logger.warning(
+                    f"Search failed with {engine_name.capitalize()}: {type(exc).__name__}: {exc}"
+                )
+                continue
 
             if not search_items:
+                failed_engines.append(engine_name)
+                continue
+
+            if required_site and not any(
+                required_site in urlparse((item.url or "")).netloc.lower()
+                for item in search_items
+            ):
+                failed_engines.append(engine_name)
+                logger.warning(
+                    f"Discarding {engine_name.capitalize()} results for query {query!r} "
+                    f"because none matched required site {required_site}"
+                )
                 continue
 
             if failed_engines:
@@ -357,8 +397,65 @@ class WebSearch(BaseTool):
                 result.raw_content = content
         return result
 
-    def _get_engine_order(self) -> List[str]:
+    @staticmethod
+    def _query_site_constraint(query: str) -> str:
+        match = re.search(r"\bsite:(?P<domain>[A-Za-z0-9.-]+)", query, re.IGNORECASE)
+        if not match:
+            return ""
+        return match.group("domain").lower().lstrip(".")
+
+    def _get_engine_order(self, query: str = "") -> List[str]:
         """Determines the order in which to try search engines."""
+        lowered = query.lower()
+        chinese_platform_cues = [
+            "site:jd.com",
+            "site:taobao.com",
+            "site:tmall.com",
+            "site:xiaohongshu.com",
+            "site:weibo.com",
+            "site:bilibili.com",
+            "京东",
+            "淘宝",
+            "天猫",
+            "小红书",
+            "微博",
+            "哔哩哔哩",
+        ]
+        english_global_sites = [
+            "site:amazon.com",
+            "site:bestbuy.com",
+            "site:walmart.com",
+            "site:apple.com",
+            "site:store.google.com",
+            "site:samsung.com",
+            "site:reddit.com",
+            "site:youtube.com",
+            "site:youtu.be",
+            '"amazon"',
+            '"amazon.com"',
+            '"best buy"',
+            '"walmart"',
+            '"reddit"',
+            '"youtube"',
+            '"apple.com"',
+        ]
+        if not re.search(r"[\u4e00-\u9fff]", query) and any(
+            site in lowered for site in english_global_sites
+        ):
+            return [
+                engine
+                for engine in ["google", "bing", "duckduckgo", "baidu"]
+                if engine in self._search_engine
+            ]
+        if re.search(r"[\u4e00-\u9fff]", query) or any(
+            cue in lowered for cue in chinese_platform_cues
+        ):
+            return [
+                engine
+                for engine in ["baidu", "google", "bing", "duckduckgo"]
+                if engine in self._search_engine
+            ]
+
         preferred = (
             getattr(config.search_config, "engine", "google").lower()
             if config.search_config
@@ -382,7 +479,54 @@ class WebSearch(BaseTool):
         )
         engine_order.extend([e for e in self._search_engine if e not in engine_order])
 
+        if config.search_config:
+            return engine_order
+
         return engine_order
+
+    async def _normalize_result_urls(
+        self, results: List[SearchResult]
+    ) -> List[SearchResult]:
+        if not results:
+            return []
+
+        normalized = await asyncio.gather(
+            *(self._normalize_single_result_url(result) for result in results)
+        )
+        return [result for result in normalized if result.url]
+
+    async def _normalize_single_result_url(self, result: SearchResult) -> SearchResult:
+        if not self._should_resolve_redirect(result.url):
+            return result
+
+        resolved_url = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._resolve_redirect_url(result.url)
+        )
+        if resolved_url:
+            result.url = resolved_url
+        return result
+
+    def _should_resolve_redirect(self, url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.netloc.lower() in self._redirect_result_hosts and parsed.path.startswith(
+            "/link"
+        )
+
+    def _resolve_redirect_url(self, url: str) -> Optional[str]:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=10,
+                allow_redirects=True,
+            )
+            final_url = response.url or ""
+            if final_url.startswith(("http://", "https://")) and final_url != url:
+                return final_url
+        except Exception as exc:
+            logger.debug(f"Failed to resolve wrapped search result {url}: {exc}")
+        return None
 
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10)

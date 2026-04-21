@@ -40,6 +40,22 @@ MULTIMODAL_MODELS = [
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
 ]
+MULTIMODAL_MODEL_KEYWORDS = [
+    "vision",
+    "vl",
+    "gui",
+    "qwen",
+    "gemini",
+    "gpt-4o",
+    "claude-3",
+]
+
+
+def model_supports_images(model_name: str) -> bool:
+    lowered = model_name.lower()
+    return model_name in MULTIMODAL_MODELS or any(
+        keyword in lowered for keyword in MULTIMODAL_MODEL_KEYWORDS
+    )
 
 
 class TokenCounter:
@@ -364,6 +380,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = True,
         temperature: Optional[float] = None,
+        timeout: int = 300,
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -385,7 +402,7 @@ class LLM:
         """
         try:
             # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+            supports_images = model_supports_images(self.model)
 
             # Format system and user messages with image support check
             if system_msgs:
@@ -406,6 +423,7 @@ class LLM:
             params = {
                 "model": self.model,
                 "messages": messages,
+                "timeout": timeout,
             }
 
             if self.model in REASONING_MODELS:
@@ -492,6 +510,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = False,
         temperature: Optional[float] = None,
+        timeout: int = 300,
     ) -> str:
         """
         Send a prompt with images to the LLM and get the response.
@@ -515,7 +534,7 @@ class LLM:
         try:
             # For ask_with_images, we always set supports_images to True because
             # this method should only be called with models that support images
-            if self.model not in MULTIMODAL_MODELS:
+            if not model_supports_images(self.model):
                 raise ValueError(
                     f"Model {self.model} does not support images. Use a model from {MULTIMODAL_MODELS}"
                 )
@@ -577,6 +596,7 @@ class LLM:
                 "model": self.model,
                 "messages": all_messages,
                 "stream": stream,
+                "timeout": timeout,
             }
 
             # Add model-specific parameters
@@ -678,7 +698,7 @@ class LLM:
                 raise ValueError(f"Invalid tool_choice: {tool_choice}")
 
             # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+            supports_images = model_supports_images(self.model)
 
             # Format messages
             if system_msgs:

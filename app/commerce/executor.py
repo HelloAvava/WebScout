@@ -24,6 +24,7 @@ from app.commerce.policy import (
 from app.logger import logger
 from app.mcp.commerce_public_server import (
     _collect_marketplace_observations,
+    _collect_marketplace_review_observations,
     _collect_official_observations,
     _collect_reddit_review_observations,
     _collect_youtube_review_observations,
@@ -40,8 +41,8 @@ SEARCH_TIMEOUT_SECONDS = 45
 SOCIAL_SEARCH_TIMEOUT_SECONDS = 18
 DIRECT_COLLECTION_TIMEOUT_SECONDS = 35
 MCP_COLLECTION_TIMEOUT_SECONDS = 35
-PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 20
-PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS = 18
+PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 45
+PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS = 45
 BROWSER_NAVIGATION_TIMEOUT_SECONDS = 45
 BROWSER_EXTRACTION_TIMEOUT_SECONDS = 90
 BROWSER_STATE_TIMEOUT_SECONDS = 20
@@ -392,6 +393,13 @@ def slugify_product_name(value: str) -> str:
     return re.sub(r"-{2,}", "-", slug)
 
 
+def slugify_google_store_product_name(value: str) -> str:
+    identity = detect_product_identity(value)
+    model_name = (identity.model_name or value or "").strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", model_name.lower()).strip("_")
+    return re.sub(r"_{2,}", "_", slug)
+
+
 def _derive_search_keyword(task: CommerceTask) -> str:
     keyword = task.query
     removable_tokens = {
@@ -573,6 +581,7 @@ def build_platform_fallback_results(task: CommerceTask) -> List[SearchResult]:
 
     keyword = quote_plus(_derive_search_keyword(task))
     product_slug = slugify_product_name(_derive_search_keyword(task))
+    google_product_slug = slugify_google_store_product_name(_derive_search_keyword(task))
     urls = {
         "amazon.com": [f"https://www.amazon.com/s?k={keyword}"],
         "bestbuy.com": [f"https://www.bestbuy.com/site/searchpage.jsp?st={keyword}"],
@@ -594,7 +603,8 @@ def build_platform_fallback_results(task: CommerceTask) -> List[SearchResult]:
             f"https://www.apple.com/iphone/",
         ],
         "store.google.com": [
-            f"https://store.google.com/us/config/{product_slug}?hl=en-US" if product_slug else "",
+            f"https://store.google.com/us/config/{google_product_slug}?hl=en-US" if google_product_slug else "",
+            f"https://store.google.com/us/product/{google_product_slug}?hl=en-US" if google_product_slug else "",
             f"https://store.google.com/us/search?q={keyword}",
             "https://store.google.com/us/category/phones",
         ],
@@ -1109,7 +1119,12 @@ def should_prefer_direct_platform_fallback(
     if execution_profile == STABLE_PUBLIC_WEB_PROFILE:
         return task.platform in STABLE_PUBLIC_WEB_DIRECT_FALLBACK_PLATFORMS
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
-        if task.source_role in {"official", "review_video", "review_community"}:
+        if task.source_role in {
+            "official",
+            "review_marketplace",
+            "review_video",
+            "review_community",
+        }:
             return True
         return task.source_role == "marketplace" and task.strategy == "policy_direct"
     return False
@@ -1132,7 +1147,11 @@ def should_collect_mcp(
     if execution_profile == STABLE_PUBLIC_WEB_PROFILE:
         return task.category in {"pricing", "reviews"}
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
-        return task.source_role in {"marketplace", "review_community", "official"}
+        return task.source_role in {
+            "marketplace",
+            "review_community",
+            "official",
+        }
     return True
 
 
@@ -1171,6 +1190,18 @@ def should_browser_enrich_search_result(
     execution_profile: ExecutionProfile,
     result: SearchResult,
 ) -> bool:
+    if (
+        execution_profile == PRODUCT_COMPARE_V2_PROFILE
+        and task.source_role == "marketplace"
+        and result.source == "platform_fallback"
+    ):
+        return False
+    if (
+        execution_profile == PRODUCT_COMPARE_V2_PROFILE
+        and task.source_role == "review_marketplace"
+        and result.source == "platform_fallback"
+    ):
+        return False
     if (
         execution_profile == PRODUCT_COMPARE_V2_PROFILE
         and task.source_role == "review_community"
@@ -1749,8 +1780,14 @@ class CommerceResearchExecutor:
                 return await _collect_marketplace_observations(
                     task.query,
                     platform=task.platform,
+                    max_results=min(task.max_results, 2),
+                    allow_search_fallback=False,
+                )
+            if task.source_role == "review_marketplace":
+                return await _collect_marketplace_review_observations(
+                    task.query,
+                    platform=task.platform,
                     max_results=task.max_results,
-                    allow_search_fallback=True,
                 )
             if task.source_role == "official":
                 return await _collect_official_observations(

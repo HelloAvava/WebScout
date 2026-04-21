@@ -73,6 +73,9 @@ Your responses must be always JSON with the specified format.
 NEXT_STEP_PROMPT = """
 What should I do next to achieve my goal?
 
+Current browser state:
+{state_snapshot_placeholder}
+
 When you see [Current state starts here], focus on the following:
 - Current URL and page title{url_placeholder}
 - Available tabs{tabs_placeholder}
@@ -87,8 +90,10 @@ For browser interactions:
 - To extract: browser_use with action="extract_content", goal="..."
 - To scroll: browser_use with action="scroll_down" or "scroll_up"
 
+Use only the currently listed interactive indices. Do not guess indices after a failed action; re-ground yourself from the latest state first.
+For search tasks, prefer the standalone `web_search` tool over manually operating search-engine homepages unless you specifically need page interaction.
 Consider both what's visible and what might be beyond the current viewport.
-Be methodical - remember your progress and what you've learned so far.
+Be methodical - remember your progress, recent failures, and what you've learned so far.
 
 If you want to stop the interaction at any point, use the `terminate` tool/function call.
 """

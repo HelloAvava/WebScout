@@ -7,10 +7,11 @@ from browser_use import Browser as BrowserUseBrowser
 from browser_use import BrowserConfig
 from browser_use.browser.context import BrowserContext, BrowserContextConfig
 from browser_use.dom.service import DomService
+from bs4 import BeautifulSoup
 from pydantic import Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
 
-from app.config import config
+from app.config import BrowserSettings, config
 from app.llm import LLM
 from app.tool.base import BaseTool, ToolResult
 from app.tool.web_search import WebSearch
@@ -88,13 +89,17 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                 "type": "string",
                 "description": "Search query for 'web_search' action",
             },
+            "navigate": {
+                "type": "boolean",
+                "description": "Whether 'web_search' should open the first valid result in the browser. Defaults to false.",
+            },
             "goal": {
                 "type": "string",
                 "description": "Extraction goal for 'extract_content' action",
             },
             "keys": {
                 "type": "string",
-                "description": "Keys to send for 'send_keys' action",
+                "description": "Keys or text to send for 'send_keys' action. Use shortcuts like 'Enter' or 'Control+L', or plain text when an input is already focused.",
             },
             "seconds": {
                 "type": "integer",
@@ -126,6 +131,9 @@ class BrowserUseTool(BaseTool, Generic[Context]):
     context: Optional[BrowserContext] = Field(default=None, exclude=True)
     dom_service: Optional[DomService] = Field(default=None, exclude=True)
     web_search_tool: WebSearch = Field(default_factory=WebSearch, exclude=True)
+    browser_settings_override: Optional[BrowserSettings] = Field(
+        default=None, exclude=True
+    )
 
     # Context for generic functionality
     tool_context: Optional[Context] = Field(default=None, exclude=True)
@@ -140,18 +148,23 @@ class BrowserUseTool(BaseTool, Generic[Context]):
 
     async def _ensure_browser_initialized(self) -> BrowserContext:
         """Ensure browser and context are initialized."""
+        effective_browser_settings = self.browser_settings_override or config.browser_config
+
         if self.browser is None:
             browser_config_kwargs = {"headless": False, "disable_security": True}
 
-            if config.browser_config:
+            if effective_browser_settings:
                 from browser_use.browser.browser import ProxySettings
 
                 # handle proxy settings.
-                if config.browser_config.proxy and config.browser_config.proxy.server:
+                if (
+                    effective_browser_settings.proxy
+                    and effective_browser_settings.proxy.server
+                ):
                     browser_config_kwargs["proxy"] = ProxySettings(
-                        server=config.browser_config.proxy.server,
-                        username=config.browser_config.proxy.username,
-                        password=config.browser_config.proxy.password,
+                        server=effective_browser_settings.proxy.server,
+                        username=effective_browser_settings.proxy.username,
+                        password=effective_browser_settings.proxy.password,
                     )
 
                 browser_attrs = [
@@ -164,7 +177,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                 ]
 
                 for attr in browser_attrs:
-                    value = getattr(config.browser_config, attr, None)
+                    value = getattr(effective_browser_settings, attr, None)
                     if value is not None:
                         if not isinstance(value, list) or value:
                             browser_config_kwargs[attr] = value
@@ -196,6 +209,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
         scroll_amount: Optional[int] = None,
         tab_id: Optional[int] = None,
         query: Optional[str] = None,
+        navigate: bool = False,
         goal: Optional[str] = None,
         keys: Optional[str] = None,
         seconds: Optional[int] = None,
@@ -226,7 +240,9 @@ class BrowserUseTool(BaseTool, Generic[Context]):
 
                 # Get max content length from config
                 max_content_length = getattr(
-                    config.browser_config, "max_content_length", 2000
+                    self.browser_settings_override or config.browser_config,
+                    "max_content_length",
+                    2000,
                 )
 
                 # Navigation actions
@@ -236,8 +252,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                             error="URL is required for 'go_to_url' action"
                         )
                     page = await context.get_current_page()
-                    await page.goto(url)
-                    await page.wait_for_load_state()
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                     return ToolResult(output=f"Navigated to {url}")
 
                 elif action == "go_back":
@@ -253,17 +268,26 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                         return ToolResult(
                             error="Query is required for 'web_search' action"
                         )
-                    # Execute the web search and return results directly without browser navigation
+                    # Search first, then navigate only when explicitly requested.
                     search_response = await self.web_search_tool.execute(
-                        query=query, fetch_content=True, num_results=1
+                        query=query, fetch_content=False, num_results=5
                     )
-                    # Navigate to the first search result
-                    first_search_result = search_response.results[0]
-                    url_to_navigate = first_search_result.url
-
-                    page = await context.get_current_page()
-                    await page.goto(url_to_navigate)
-                    await page.wait_for_load_state()
+                    if navigate:
+                        valid_result = next(
+                            (
+                                result
+                                for result in search_response.results
+                                if result.url.startswith(("http://", "https://"))
+                            ),
+                            None,
+                        )
+                        if valid_result:
+                            page = await context.get_current_page()
+                            await page.goto(
+                                valid_result.url,
+                                wait_until="domcontentloaded",
+                                timeout=30000,
+                            )
 
                     return search_response
 
@@ -328,8 +352,27 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                             error="Keys are required for 'send_keys' action"
                         )
                     page = await context.get_current_page()
-                    await page.keyboard.press(keys)
-                    return ToolResult(output=f"Sent keys: {keys}")
+                    special_keys = {
+                        "Enter",
+                        "Tab",
+                        "Escape",
+                        "Backspace",
+                        "Delete",
+                        "ArrowUp",
+                        "ArrowDown",
+                        "ArrowLeft",
+                        "ArrowRight",
+                        "Home",
+                        "End",
+                        "PageUp",
+                        "PageDown",
+                    }
+                    if "+" in keys or keys in special_keys:
+                        await page.keyboard.press(keys)
+                        return ToolResult(output=f"Sent keys: {keys}")
+
+                    await page.keyboard.type(keys)
+                    return ToolResult(output=f"Typed text via keyboard: {keys}")
 
                 elif action == "get_dropdown_options":
                     if index is None:
@@ -381,7 +424,18 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                     page = await context.get_current_page()
                     import markdownify
 
-                    content = markdownify.markdownify(await page.content())
+                    try:
+                        await page.wait_for_load_state(
+                            "domcontentloaded", timeout=10000
+                        )
+                    except Exception:
+                        pass
+
+                    html = await page.content()
+                    soup = BeautifulSoup(html, "html.parser")
+                    for tag in soup(["script", "style", "nav", "header", "footer"]):
+                        tag.decompose()
+                    content = markdownify.markdownify(str(soup))
 
                     prompt = f"""\
 Your task is to extract the content of the page. You will be given a page and a goal, and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format.
@@ -437,6 +491,19 @@ Page content:
                     if response and response.tool_calls:
                         args = json.loads(response.tool_calls[0].function.arguments)
                         extracted_content = args.get("extracted_content", {})
+                        extracted_text = extracted_content.get("text", "")
+                        if (
+                            not isinstance(extracted_text, str)
+                            or not extracted_text.strip()
+                            or extracted_text.strip().lower() == "string"
+                        ):
+                            extracted_content = {
+                                "text": content[: min(max_content_length, 4000)],
+                                "metadata": {
+                                    "source": page.url,
+                                    "fallback": True,
+                                },
+                            }
                         return ToolResult(
                             output=f"Extracted from page:\n{extracted_content}\n"
                         )
@@ -451,7 +518,12 @@ Page content:
                         )
                     await context.switch_to_tab(tab_id)
                     page = await context.get_current_page()
-                    await page.wait_for_load_state()
+                    try:
+                        await page.wait_for_load_state(
+                            "domcontentloaded", timeout=10000
+                        )
+                    except Exception:
+                        pass
                     return ToolResult(output=f"Switched to tab {tab_id}")
 
                 elif action == "open_tab":
@@ -502,7 +574,10 @@ Page content:
             page = await ctx.get_current_page()
 
             await page.bring_to_front()
-            await page.wait_for_load_state()
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
 
             screenshot = await page.screenshot(
                 full_page=True, animations="disabled", type="jpeg", quality=100

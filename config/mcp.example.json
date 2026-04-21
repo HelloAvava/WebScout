@@ -1,8 +1,37 @@
 {
-    "mcpServers": {
-      "server1": {
-        "type": "sse",
-        "url": "http://localhost:8000/sse"
-      }
+  "mcpServers": {
+    "commerce_public": {
+      "type": "stdio",
+      "command": "./.venv/bin/python",
+      "args": [
+        "-m",
+        "app.mcp.commerce_public_server"
+      ]
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "bash",
+      "args": [
+        "./scripts/start_playwright_mcp.sh"
+      ],
+      "cwd": "."
+    },
+    "price_search": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
+    },
+    "brightdata": {
+      "type": "stdio",
+      "command": "bash",
+      "args": [
+        "./scripts/start_brightdata_mcp.sh"
+      ],
+      "cwd": ".",
+      "required_env_any": [
+        "BRIGHTDATA_API_TOKEN",
+        "BRIGHT_DATA_API_TOKEN",
+        "API_TOKEN"
+      ]
     }
+  }
 }

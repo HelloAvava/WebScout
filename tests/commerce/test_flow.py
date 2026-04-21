@@ -13,7 +13,10 @@ from app.flow.commerce import (
     DEFAULT_STABLE_PUBLIC_WEB_PROMPT,
     CommerceDecisionFlow,
     _build_review_highlights,
+    _is_product_compare_v2_community_review_item,
+    _is_product_compare_v2_marketplace_review_item,
     _preferred_diagnostic_reason,
+    _review_excerpt_for_report,
 )
 
 
@@ -151,6 +154,46 @@ def test_preferred_diagnostic_reason_prioritizes_specific_blockers_over_timeout(
     ]
 
     assert _preferred_diagnostic_reason(diagnostics) == "login_required"
+
+
+def test_review_excerpt_for_report_removes_repeated_youtube_noise():
+    item = EvidenceItem(
+        category="reviews",
+        platform="YouTube",
+        title="iPhone 16 full review",
+        url="https://www.youtube.com/watch?v=abc",
+        extracted_text=(
+            "| iPhone 16 full review | Marques Brownlee Marques Brownlee Marques Brownlee "
+            "[Review covers battery life, camera upgrades, and whether it is worth buying.](h"
+        ),
+        source_type="media",
+        source_role="review_video",
+        metadata={"channel": "Marques Brownlee"},
+    )
+
+    excerpt = _review_excerpt_for_report(item)
+
+    assert "Marques Brownlee Marques Brownlee" not in excerpt
+    assert not excerpt.startswith("|")
+    assert "[" not in excerpt
+    assert excerpt.startswith("Review covers battery life")
+
+
+def test_product_compare_v2_community_filter_rejects_search_fallback_page():
+    item = EvidenceItem(
+        category="social",
+        platform="Reddit",
+        title="Reddit direct search",
+        url="https://www.reddit.com/search/?q=Google+Pixel+9",
+        snippet="Direct platform fallback for Pixel 9 Reddit samples",
+        extracted_text="",
+        source_type="community",
+        source_role="review_community",
+        credibility=0.6,
+        metadata={"search_source": "platform_fallback"},
+    )
+
+    assert not _is_product_compare_v2_community_review_item(item)
 
 
 @pytest.mark.asyncio
@@ -372,7 +415,16 @@ def test_product_compare_v2_followups_retry_missing_review_sources():
 
     followups = flow._derive_followup_tasks(plan, evidence)
 
-    assert {task.platform for task in followups} == {"YouTube", "Reddit"}
+    assert {(task.platform, task.source_role) for task in followups} == {
+        ("Amazon", "review_marketplace"),
+        ("Best Buy", "review_marketplace"),
+        ("Walmart", "review_marketplace"),
+        ("Target", "review_marketplace"),
+        ("B&H", "review_marketplace"),
+        ("Newegg", "review_marketplace"),
+        ("YouTube", "review_video"),
+        ("Reddit", "review_community"),
+    }
 
 
 @pytest.mark.asyncio
@@ -739,15 +791,24 @@ async def test_product_compare_v2_plan_uses_brand_policy_without_llm(monkeypatch
     assert plan.official_sources == ["store.google.com"]
     assert plan.shopping_platforms == ["Amazon", "Best Buy"]
     assert plan.community_platforms == ["YouTube", "Reddit"]
-    assert [task.source_role for task in plan.tasks] == [
-        "marketplace",
-        "marketplace",
-        "official",
-        "review_video",
-        "review_community",
-    ]
+    roles = [task.source_role for task in plan.tasks]
+    assert roles[:3] == ["marketplace", "marketplace", "official"]
+    assert roles.count("review_marketplace") == 6
+    assert roles[-2:] == ["review_video", "review_community"]
     assert plan.tasks[0].query.startswith("Google Pixel 9 price Amazon")
     assert plan.tasks[1].max_results == 5
+    retail_review_tasks = [
+        task for task in plan.tasks if task.source_role == "review_marketplace"
+    ]
+    assert [task.platform for task in retail_review_tasks] == [
+        "Amazon",
+        "Best Buy",
+        "Walmart",
+        "Target",
+        "B&H",
+        "Newegg",
+    ]
+    assert all(task.max_results >= 10 for task in retail_review_tasks)
 
 
 @pytest.mark.asyncio
@@ -778,15 +839,36 @@ async def test_product_compare_v2_plan_builds_generic_macbook_policy():
     assert plan.official_sources == ["Apple.com"]
     assert plan.shopping_platforms == ["Amazon", "Best Buy"]
     assert plan.community_platforms == ["YouTube", "Reddit"]
-    assert [task.source_role for task in plan.tasks] == [
-        "marketplace",
-        "marketplace",
-        "official",
-        "review_video",
-        "review_community",
-    ]
+    roles = [task.source_role for task in plan.tasks]
+    assert roles[:3] == ["marketplace", "marketplace", "official"]
+    assert roles.count("review_marketplace") == 6
+    assert roles[-2:] == ["review_video", "review_community"]
     assert plan.tasks[2].platform == "Apple.com"
-    assert plan.tasks[2].query.startswith("Apple MacBook Pro official specifications buy")
+    assert plan.comparison_subject == "Apple 14-inch MacBook Pro M5"
+    assert plan.tasks[2].query.startswith(
+        "Apple 14-inch MacBook Pro M5 official specifications buy"
+    )
+
+
+@pytest.mark.asyncio
+async def test_product_compare_v2_plan_scopes_series_macbook_to_comparable_baseline():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare current MacBook Pro prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg; "
+        "summarize public customer reviews plus YouTube and Reddit feedback."
+    )
+
+    assert plan.product_name == "MacBook Pro"
+    assert plan.comparison_subject == "Apple 14-inch MacBook Pro M5"
+    pricing_tasks = [task for task in plan.tasks if task.source_role == "marketplace"]
+    assert pricing_tasks
+    assert all("14-inch MacBook Pro M5" in task.query for task in pricing_tasks)
+    assert all("代表型号" in task.goal for task in pricing_tasks)
+    assert not any(task.query.startswith("Apple MacBook Pro price") for task in pricing_tasks)
+    official_task = next(task for task in plan.tasks if task.source_role == "official")
+    assert "Apple 14-inch MacBook Pro M5" in official_task.query
+    assert "代表型号" in official_task.goal
 
 
 @pytest.mark.asyncio
@@ -805,7 +887,7 @@ async def test_product_compare_v2_plan_preserves_macbook_chip_suffix():
 
 
 @pytest.mark.asyncio
-async def test_product_compare_v2_plan_supports_requested_walmart_and_preserves_target_gap():
+async def test_product_compare_v2_plan_supports_requested_walmart_and_target_prices():
     flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
 
     plan = await flow._create_plan(
@@ -813,8 +895,63 @@ async def test_product_compare_v2_plan_supports_requested_walmart_and_preserves_
     )
 
     assert "Walmart" in plan.shopping_platforms
-    assert set(plan.unsupported_sources) == {"Target"}
+    assert "Target" in plan.shopping_platforms
+    assert plan.unsupported_sources == []
     assert any(task.platform == "Walmart" and task.source_role == "marketplace" for task in plan.tasks)
+    assert any(task.platform == "Target" and task.source_role == "marketplace" for task in plan.tasks)
+
+
+@pytest.mark.asyncio
+async def test_product_compare_v2_review_only_retail_platforms_do_not_expand_price_tasks():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare iPhone 16 prices on Amazon and Best Buy, then summarize Amazon, Best Buy, "
+        "Walmart, Target, B&H, and Newegg customer reviews, YouTube and Reddit sentiment, "
+        "and confirm official specs."
+    )
+
+    assert plan.shopping_platforms == ["Amazon", "Best Buy"]
+    assert "Target" not in plan.unsupported_sources
+    retail_review_platforms = [
+        task.platform for task in plan.tasks if task.source_role == "review_marketplace"
+    ]
+    assert retail_review_platforms == [
+        "Amazon",
+        "Best Buy",
+        "Walmart",
+        "Target",
+        "B&H",
+        "Newegg",
+    ]
+    assert not any(
+        task.category == "pricing"
+        and task.platform in {"Walmart", "Target", "B&H", "Newegg"}
+        for task in plan.tasks
+    )
+
+
+@pytest.mark.asyncio
+async def test_product_compare_v2_explicit_price_retail_platforms_create_price_tasks():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare Ninja Creami Deluxe prices on Amazon, Best Buy, Walmart, Target, B&H, and Newegg, then summarize YouTube and Reddit sentiment."
+    )
+
+    pricing_platforms = [
+        task.platform for task in plan.tasks if task.source_role == "marketplace"
+    ]
+
+    assert pricing_platforms == [
+        "Amazon",
+        "Best Buy",
+        "Walmart",
+        "Target",
+        "B&H",
+        "Newegg",
+    ]
+    assert plan.unsupported_sources == []
 
 
 @pytest.mark.asyncio
@@ -830,12 +967,10 @@ async def test_product_compare_v2_plan_builds_generic_tasks_without_brand_policy
     assert plan.shopping_platforms == ["Amazon", "Walmart"]
     assert plan.community_platforms == ["YouTube", "Reddit"]
     assert plan.official_sources == []
-    assert [task.source_role for task in plan.tasks] == [
-        "marketplace",
-        "marketplace",
-        "review_video",
-        "review_community",
-    ]
+    roles = [task.source_role for task in plan.tasks]
+    assert roles[:2] == ["marketplace", "marketplace"]
+    assert roles.count("review_marketplace") == 6
+    assert roles[-2:] == ["review_video", "review_community"]
 
 
 @pytest.mark.asyncio
@@ -855,7 +990,14 @@ async def test_product_compare_v2_followup_does_not_retry_attempted_marketplace(
         completed_tasks=completed_tasks,
     )
 
-    assert all(task.platform != "Amazon" for task in followups)
+    assert not any(
+        task.platform == "Amazon" and task.source_role == "marketplace"
+        for task in followups
+    )
+    assert any(
+        task.platform == "Amazon" and task.source_role == "review_marketplace"
+        for task in followups
+    )
 
 
 @pytest.mark.asyncio
@@ -1147,6 +1289,7 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
 
     assert report.status == "complete"
     assert len(report.marketplace_quotes) == 2
+    assert any("代表型号" in item and "14-inch MacBook Pro M5" in item for item in report.source_notes)
     assert not any("同一配置的第二个有效商城报价" in item for item in report.rumors_or_uncertain)
 
 
@@ -1229,6 +1372,8 @@ async def test_product_compare_v2_complete_report_requires_marketplace_official_
                 "review_highlights": [
                     "核心卖点：影像和系统体验是最稳定的正面信号。",
                     "槽点与争议：续航与发热在社区讨论里更容易被挑出来。",
+                    "价格与升级价值：官方价和商城价之间存在明显价差，需要结合保修判断。",
+                    "长期使用风险：社区样本提醒电池稳定性和发热需要继续观察。",
                     "目标人群画像：适合偏爱原生 Android 和计算摄影的人。",
                     "总结性评价：整体是一台优点明确、但仍要留意长时续航的机型。",
                 ]
@@ -1298,6 +1443,18 @@ async def test_product_compare_v2_complete_report_requires_marketplace_official_
         ),
         EvidenceItem(
             category="reviews",
+            platform="Best Buy",
+            title="Best Buy customer reviews for Google Pixel 9",
+            url="https://www.bestbuy.com/site/reviews/google-pixel-9/1234567",
+            snippet="Rating 4.6 out of 5 stars. Customers praise the camera and compact size, while some mention battery variability.",
+            extracted_text="Verified buyers praise the camera, display, compact size, and clean Android experience. A few reviews mention battery variability.",
+            source_type="marketplace",
+            source_role="review_marketplace",
+            credibility=0.83,
+            metadata={"strategy": "marketplace_review_page"},
+        ),
+        EvidenceItem(
+            category="reviews",
             platform="YouTube",
             title="Pixel 9 long term review",
             url="https://www.youtube.com/watch?v=pixel9review",
@@ -1334,6 +1491,53 @@ async def test_product_compare_v2_complete_report_requires_marketplace_official_
     assert report.official_baseline.platform == "store.google.com"
     assert all(quote.platform != "store.google.com" for quote in report.marketplace_quotes)
     assert any(item.startswith("核心卖点：") for item in report.review_highlights)
+    assert len(report.review_highlights) >= 6
+    markdown = report.to_markdown()
+    assert "## 样本覆盖" in markdown
+    assert "## 价格与配置分析" in markdown
+    assert "## 证据矩阵" in markdown
+    assert "零售评论" in markdown
+    assert "## 口碑深挖" in markdown
+    assert "## 样本摘录" in markdown
+    assert "Best Buy" in markdown
+    assert "YouTube" in markdown
+    assert "Reddit" in markdown
+
+
+@pytest.mark.asyncio
+async def test_product_compare_v2_plan_requests_deeper_review_sampling():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare Pixel 9 prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+    )
+
+    youtube_task = next(task for task in plan.tasks if task.platform == "YouTube")
+    reddit_task = next(task for task in plan.tasks if task.platform == "Reddit")
+    retail_review_tasks = [
+        task for task in plan.tasks if task.source_role == "review_marketplace"
+    ]
+
+    assert youtube_task.max_results >= 24
+    assert reddit_task.max_results >= 20
+    assert retail_review_tasks
+    assert all(task.max_results >= 10 for task in retail_review_tasks)
+
+
+def test_product_compare_v2_marketplace_review_filter_accepts_public_review_signal():
+    item = EvidenceItem(
+        category="reviews",
+        platform="Best Buy",
+        title="Best Buy customer reviews for Pixel 9",
+        url="https://www.bestbuy.com/site/reviews/google-pixel-9/1234567",
+        snippet="Rating 4.6 out of 5 stars. Customers praise the camera and compact size.",
+        source_type="marketplace",
+        source_role="review_marketplace",
+        credibility=0.83,
+        metadata={"mcp_kind": "reviews", "strategy": "marketplace_review_page"},
+    )
+
+    assert _is_product_compare_v2_marketplace_review_item(item)
 
 
 @pytest.mark.asyncio

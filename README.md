@@ -118,6 +118,8 @@ api_key = "sk-..."  # Replace with your actual API key
 
 ## Quick Start
 
+For a setup-focused guide covering local config files, MCP, browser modes, and commerce examples, see [QUICKSTART.md](QUICKSTART.md).
+
 One line for run OpenManus:
 
 ```bash
@@ -136,6 +138,64 @@ For unstable multi-agent version, you also can run:
 ```bash
 python run_flow.py
 ```
+
+For the commerce decision demo, you can run:
+
+```bash
+python run_commerce.py --demo-profile stable_public_web --browser-session-mode public_only
+```
+
+For the policy-driven product comparison flow, run:
+
+```bash
+python run_commerce.py \
+  --execution-profile product_compare_v2 \
+  --browser-session-mode public_only \
+  --prompt "Compare iPhone 16 prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+```
+
+Commerce profile summary:
+
+- `stable_public_web`: fixed public-web demo profile, optimized for repeatable demos
+- `product_compare_v2`: policy-driven product-comparison flow with structured `complete / partial / incomplete` reports
+
+Current best live cases:
+
+- `iPhone 16`
+- `Pixel 9`
+- `Galaxy S25`
+
+The V2 flow now includes a generic product path and no longer hard-codes all requests into the phone demo logic, but non-phone products are still more sensitive to public search quality and anti-bot behavior.
+
+Detailed commerce progress, architecture, supported scope, and limitations:
+
+- English: [docs/commerce-agent.md](docs/commerce-agent.md)
+- 中文: [docs/commerce-agent.zh.md](docs/commerce-agent.zh.md)
+
+If you need to handle higher anti-bot sites with your own logged-in Chrome session:
+
+1. Start Chrome or Chromium with remote debugging enabled:
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/openmanus-cdp-profile
+```
+
+2. Log in or finish any manual verification in that browser window.
+3. Add this to `config/config.toml`:
+
+```toml
+[browser]
+session_mode = "auto"
+cdp_url = "http://127.0.0.1:9222"
+```
+
+4. Re-run the commerce flow:
+
+```bash
+python run_commerce.py --browser-session-mode auto --prompt "Compare iPhone 16 prices on Amazon and Walmart, then summarize YouTube reviews and confirm official specs."
+```
+
+This mode does not auto-solve captchas. It only reuses your existing browser session when available.
 
 ### Custom Adding Multiple Agents
 

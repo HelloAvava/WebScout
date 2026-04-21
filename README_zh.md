@@ -119,6 +119,8 @@ api_key = "sk-..."  # 替换为真实 API 密钥
 
 ## 快速启动
 
+如果你需要从零配置环境、LLM、MCP、浏览器模式和 commerce 示例，请先看 [QUICKSTART.md](QUICKSTART.md)。
+
 一行命令运行 OpenManus：
 
 ```bash
@@ -137,6 +139,64 @@ python run_mcp.py
 ```bash
 python run_flow.py
 ```
+
+如需运行商品比价与口碑分析 demo，可运行：
+
+```bash
+python run_commerce.py --demo-profile stable_public_web --browser-session-mode public_only
+```
+
+如需运行策略化的商品比价 V2 工作流，可运行：
+
+```bash
+python run_commerce.py \
+  --execution-profile product_compare_v2 \
+  --browser-session-mode public_only \
+  --prompt "Compare iPhone 16 prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+```
+
+两个 commerce profile 的区别：
+
+- `stable_public_web`：固定公开网页 demo 档位，适合稳定演示
+- `product_compare_v2`：面向商品比价的策略化工作流，输出结构化的 `complete / partial / incomplete` 报告
+
+当前最成熟的 live case：
+
+- `iPhone 16`
+- `Pixel 9`
+- `Galaxy S25`
+
+V2 现在已经包含泛商品路径，不再把所有请求都硬套进手机 demo 逻辑；但非手机商品仍然更容易受到公开搜索质量和反爬影响。
+
+详细的 commerce 进展、架构、支持范围和已知限制见：
+
+- English: [docs/commerce-agent.md](docs/commerce-agent.md)
+- 中文: [docs/commerce-agent.zh.md](docs/commerce-agent.zh.md)
+
+如果你希望在高反爬站点上复用自己已经登录的 Chrome 会话：
+
+1. 用远程调试模式启动 Chrome 或 Chromium：
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/openmanus-cdp-profile
+```
+
+2. 在打开的浏览器窗口里手动完成登录或验证码验证。
+3. 在 `config/config.toml` 中加入：
+
+```toml
+[browser]
+session_mode = "auto"
+cdp_url = "http://127.0.0.1:9222"
+```
+
+4. 然后重新运行：
+
+```bash
+python run_commerce.py --browser-session-mode auto --prompt "Compare Galaxy S25 prices on Amazon and Best Buy, then summarize YouTube and Reddit sentiment and confirm official specs."
+```
+
+这个模式不会自动破解验证码，只会在可用时复用你自己的浏览器会话。
 
 ## 添加自定义多智能体
 

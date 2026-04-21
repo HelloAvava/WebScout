@@ -32,7 +32,11 @@ TOOL_PRIORITY_HINTS = {
         "price_benchmark_search": 2,
         "scrape_as_markdown": 3,
     },
-    "reviews": {"youtube_video_review_search": 6, "scrape_as_markdown": 2},
+    "reviews": {
+        "marketplace_customer_review_search": 7,
+        "youtube_video_review_search": 6,
+        "scrape_as_markdown": 2,
+    },
     "social": {"reddit_community_review_search": 6, "scrape_as_markdown": 2},
 }
 PLATFORM_STRUCTURED_TOOL_HINTS = {
@@ -40,16 +44,19 @@ PLATFORM_STRUCTURED_TOOL_HINTS = {
         "web_data_amazon_product_search",
         "web_data_amazon_product",
         "amazon_product",
+        "marketplace_customer_review_search",
     ],
     "best buy": [
         "web_data_bestbuy_products",
         "bestbuy_products",
         "bestbuy",
+        "marketplace_customer_review_search",
     ],
     "walmart": [
         "web_data_walmart_product",
         "walmart_product",
         "walmart",
+        "marketplace_customer_review_search",
     ],
     "youtube": [
         "web_data_youtube_videos",
@@ -1017,7 +1024,7 @@ class CommerceMCPBridge:
                 tool.server_id.lower(),
             ]
         )
-        if task.source_role == "marketplace" or any(
+        if task.source_role in {"marketplace", "review_marketplace"} or any(
             token in haystack for token in ["amazon", "bestbuy", "walmart", "product"]
         ):
             return "marketplace"
@@ -1160,6 +1167,7 @@ class CommerceMCPBridge:
         ).strip() or task.query
         keyword = quote_plus(keyword_text)
         product_slug = re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-")
+        google_product_slug = re.sub(r"[^a-z0-9]+", "_", model_name.lower()).strip("_")
         domain = CommerceMCPBridge._infer_platform_domain(task.platform)
         if domain == "amazon.com":
             return [f"https://www.amazon.com/s?k={keyword}"]
@@ -1171,6 +1179,18 @@ class CommerceMCPBridge:
             return [f"https://www.reddit.com/search/?q={keyword}"]
         if domain == "youtube.com":
             return [f"https://www.youtube.com/results?search_query={keyword}"]
+        if domain == "store.google.com":
+            urls = [
+                f"https://store.google.com/us/config/{google_product_slug}?hl=en-US"
+                if google_product_slug
+                else "",
+                f"https://store.google.com/us/product/{google_product_slug}?hl=en-US"
+                if google_product_slug
+                else "",
+                f"https://store.google.com/us/search?q={keyword}",
+                "https://store.google.com/us/category/phones",
+            ]
+            return [url for url in urls if url]
         if domain == "apple.com":
             urls: List[str] = []
             lowered_model = model_name.lower()

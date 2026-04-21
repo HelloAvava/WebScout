@@ -8,6 +8,9 @@ data/
 # Workspace
 workspace/
 
+# Local MCP/server credentials
+config/mcp.json
+
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/

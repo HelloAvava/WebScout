@@ -324,3 +324,18 @@ def test_mcp_bridge_seed_urls_prefer_apple_buy_page_for_iphone():
     urls = CommerceMCPBridge._seed_urls(task)
 
     assert urls[0] == "https://www.apple.com/shop/buy-iphone/iphone-16"
+
+
+def test_mcp_bridge_seed_urls_prefer_google_pixel_config_without_brand_prefix():
+    task = CommerceTask(
+        category="official",
+        platform="store.google.com",
+        query="Google Pixel 9 official specifications buy",
+        goal="collect official specs",
+        source_role="official",
+    )
+
+    urls = CommerceMCPBridge._seed_urls(task)
+
+    assert urls[0] == "https://store.google.com/us/config/pixel_9?hl=en-US"
+    assert "google-pixel-9" not in "\n".join(urls)

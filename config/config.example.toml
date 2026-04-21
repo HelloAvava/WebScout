@@ -59,6 +59,15 @@ temperature = 0.0                          # Controls randomness for vision mode
 # [browser]
 # Whether to run browser in headless mode (default: false)
 #headless = false
+# Commerce browser session strategy:
+# "auto" = use public browsing by default and switch Amazon / Best Buy / Walmart and similar sites to a local Chrome session when available;
+#          if no explicit cdp_url / wss_url / chrome_instance_path is set, commerce will also try to auto-discover a local Playwright Chromium
+# "public_only" = never use a local Chrome session
+# "local_cdp" = require a local Chrome session for session-preferred sites
+# Commerce execution profile is selected at runtime:
+#   python run_commerce.py --demo-profile stable_public_web
+#   python run_commerce.py --execution-profile product_compare_v2
+#session_mode = "auto"
 # Disable browser security features (default: true)
 #disable_security = true
 # Extra arguments to pass to the browser
@@ -69,6 +78,7 @@ temperature = 0.0                          # Controls randomness for vision mode
 # Connect to a browser instance via WebSocket
 #wss_url = ""
 # Connect to a browser instance via CDP
+# Example: "http://127.0.0.1:9222"
 #cdp_url = ""
 
 # Optional configuration, Proxy settings for the browser
@@ -110,4 +120,5 @@ server_reference = "app.mcp.server" # default server module reference
 # Optional Runflow configuration
 # Your can add additional agents into run-flow workflow to solve different-type tasks.
 [runflow]
+flow_type = "planning"              # "planning" 或 "commerce_decision"
 use_data_analysis_agent = false     # The Data Analysi Agent to solve various data analysis tasks

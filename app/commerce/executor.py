@@ -44,6 +44,7 @@ DIRECT_COLLECTION_TIMEOUT_SECONDS = 35
 MCP_COLLECTION_TIMEOUT_SECONDS = 35
 PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 45
 PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS = 45
+PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS = 120
 BROWSER_NAVIGATION_TIMEOUT_SECONDS = 45
 BROWSER_EXTRACTION_TIMEOUT_SECONDS = 90
 BROWSER_STATE_TIMEOUT_SECONDS = 20
@@ -1102,6 +1103,11 @@ def get_search_timeout_seconds(task: CommerceTask) -> int:
 def get_direct_collection_timeout_seconds(
     task: CommerceTask, execution_profile: ExecutionProfile
 ) -> int:
+    if (
+        execution_profile == PRODUCT_COMPARE_V2_PROFILE
+        and task.source_role == "review_editorial"
+    ):
+        return PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
         return PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS
     return DIRECT_COLLECTION_TIMEOUT_SECONDS
@@ -1110,6 +1116,11 @@ def get_direct_collection_timeout_seconds(
 def get_mcp_collection_timeout_seconds(
     task: CommerceTask, execution_profile: ExecutionProfile
 ) -> int:
+    if (
+        execution_profile == PRODUCT_COMPARE_V2_PROFILE
+        and task.source_role == "review_editorial"
+    ):
+        return PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
         return PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS
     return MCP_COLLECTION_TIMEOUT_SECONDS
@@ -1152,7 +1163,6 @@ def should_collect_mcp(
         return task.source_role in {
             "marketplace",
             "review_community",
-            "review_editorial",
             "official",
         }
     return True

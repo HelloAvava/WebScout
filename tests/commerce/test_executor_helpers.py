@@ -10,6 +10,7 @@ from app.commerce.executor import (
     DIRECT_COLLECTION_TIMEOUT_SECONDS,
     HIGH_ANTI_BOT_PLATFORMS,
     MCP_COLLECTION_TIMEOUT_SECONDS,
+    PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS,
     PRODUCT_COMPARE_V2_PROFILE,
     SESSION_PREFERRED_PLATFORMS,
     build_platform_fallback_results,
@@ -54,10 +55,12 @@ from app.mcp.commerce_public_server import (
     _extract_amazon_mirror_observations,
     _extract_best_apple_price,
     _extract_bestbuy_mirror_observations,
+    _extract_duckduckgo_html_results,
     _extract_google_official_price_from_html,
     _extract_marketplace_review_observations_from_text,
     _extract_marketplace_mirror_observations,
     _extract_reddit_feed_observations_from_text,
+    _extract_startpage_html_results,
     _extract_samsung_official_price_from_html,
     _extract_youtube_mirror_observations,
     _extract_walmart_mirror_observations,
@@ -500,11 +503,19 @@ def test_product_compare_v2_only_uses_mcp_for_marketplace_and_community_tasks():
         goal="collect official specs",
         source_role="official",
     )
+    editorial_task = CommerceTask(
+        category="reviews",
+        platform="Editorial Web",
+        query="Pixel 9 professional reviews",
+        goal="collect editorial review signals",
+        source_role="review_editorial",
+    )
 
     assert should_collect_mcp(pricing_task, "product_compare_v2")
     assert not should_collect_mcp(marketplace_review_task, "product_compare_v2")
     assert should_collect_mcp(community_task, "product_compare_v2")
     assert not should_collect_mcp(video_task, "product_compare_v2")
+    assert not should_collect_mcp(editorial_task, "product_compare_v2")
     assert should_collect_mcp(official_task, "product_compare_v2")
 
 
@@ -1861,6 +1872,26 @@ def test_product_compare_v2_collection_timeouts_allow_public_price_mirrors():
     assert (
         get_mcp_collection_timeout_seconds(task, PRODUCT_COMPARE_V2_PROFILE)
         >= MCP_COLLECTION_TIMEOUT_SECONDS
+    )
+
+
+def test_product_compare_v2_editorial_collection_gets_more_time():
+    task = CommerceTask(
+        category="reviews",
+        platform="Editorial Web",
+        query="Google Pixel 9 professional editorial reviews",
+        goal="collect professional review evidence",
+        source_role="review_editorial",
+        strategy="policy_direct",
+    )
+
+    assert (
+        get_direct_collection_timeout_seconds(task, PRODUCT_COMPARE_V2_PROFILE)
+        == PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS
+    )
+    assert (
+        get_mcp_collection_timeout_seconds(task, PRODUCT_COMPARE_V2_PROFILE)
+        == PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS
     )
 
 
@@ -3676,6 +3707,43 @@ def test_editorial_review_queries_add_targeted_media_site_searches():
     assert all("-site:" not in query for query in queries)
 
 
+def test_duckduckgo_html_editorial_fallback_extracts_result_links():
+    body = """
+    <html><body>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.cnet.com%2Ftech%2Fmobile%2Fgoogle-pixel-9-review%2F">Google Pixel 9 Review - CNET</a>
+      <a class="result-link" href="/l/?uddg=https%3A%2F%2Fwww.gsmarena.com%2Fgoogle_pixel_9-review-2739.php">Google Pixel 9 review: verdict</a>
+    </body></html>
+    """
+
+    results = _extract_duckduckgo_html_results(body, num_results=5)
+
+    assert [result.source for result in results] == [
+        "duckduckgo_html",
+        "duckduckgo_html",
+    ]
+    assert results[0].url == "https://www.cnet.com/tech/mobile/google-pixel-9-review/"
+    assert results[1].url == "https://www.gsmarena.com/google_pixel_9-review-2739.php"
+
+
+def test_startpage_html_editorial_fallback_extracts_result_links_and_snippets():
+    body = """
+    <html><body>
+      <a class="result-title result-link css-1" href="https://www.tomsguide.com/phones/google-pixel-phones/google-pixel-9-review">
+        <h2>Google Pixel 9 review: Great cameras | Tom&#39;s Guide</h2>
+      </a>
+      <p class="description css-2">The Google Pixel 9 review covers battery and camera.</p>
+    </body></html>
+    """
+
+    results = _extract_startpage_html_results(body, num_results=5)
+
+    assert len(results) == 1
+    assert results[0].source == "startpage_html"
+    assert results[0].url.endswith("/google-pixel-9-review")
+    assert "Tom's Guide" in results[0].title
+    assert "battery and camera" in results[0].description
+
+
 @pytest.mark.asyncio
 async def test_editorial_review_collection_builds_media_observations(monkeypatch):
     async def fake_execute_search(query: str, *, num_results: int, lang: str = "en", country: str = "us"):
@@ -3695,7 +3763,7 @@ async def test_editorial_review_collection_builds_media_observations(monkeypatch
         return "Google Pixel 9 review with camera, battery, Tensor, and charging notes."
 
     monkeypatch.setattr(
-        "app.mcp.commerce_public_server._execute_search",
+        "app.mcp.commerce_public_server._execute_editorial_search",
         fake_execute_search,
     )
     monkeypatch.setattr(
@@ -3713,6 +3781,92 @@ async def test_editorial_review_collection_builds_media_observations(monkeypatch
     assert observations[0]["source_type"] == "media"
     assert observations[0]["metadata"]["strategy"] == "editorial_search_result"
     assert observations[0]["metadata"]["source_domain"] == "theverge.com"
+
+
+@pytest.mark.asyncio
+async def test_editorial_review_collection_limits_slow_searches(monkeypatch):
+    calls = []
+
+    async def fake_fetch_page_text(url: str):
+        return ""
+
+    async def fake_execute_search(query: str, *, num_results: int, lang: str = "en", country: str = "us"):
+        calls.append(query)
+        return []
+
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._fetch_page_text",
+        fake_fetch_page_text,
+    )
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._execute_editorial_search",
+        fake_execute_search,
+    )
+
+    observations = await _collect_editorial_review_observations(
+        "Google Pixel 9 professional editorial reviews",
+        max_results=4,
+    )
+
+    assert observations == []
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_editorial_review_collection_uses_direct_url_candidates(monkeypatch):
+    async def fake_fetch_page_text(url: str):
+        if "digitaltrends.com/phones/google-pixel-9-review" in url:
+            return (
+                "Google Pixel 9 review: better than ever\n"
+                "The Google Pixel 9 review covers battery, camera, heat, pros, cons, and verdict."
+            )
+        return ""
+
+    async def should_not_search(*args, **kwargs):
+        raise AssertionError("direct editorial URL candidate should satisfy max_results=1")
+
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._fetch_page_text",
+        fake_fetch_page_text,
+    )
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._execute_search",
+        should_not_search,
+    )
+
+    observations = await _collect_editorial_review_observations(
+        "Google Pixel 9 professional editorial reviews",
+        max_results=1,
+    )
+
+    assert len(observations) == 1
+    assert observations[0]["metadata"]["strategy"] == "editorial_direct_url"
+    assert observations[0]["metadata"]["source_domain"] == "digitaltrends.com"
+
+
+@pytest.mark.asyncio
+async def test_editorial_review_collection_rejects_direct_url_not_found_pages(monkeypatch):
+    async def fake_fetch_page_text(url: str):
+        return "Page not found Expert Reviews We're sorry this page no longer exists."
+
+    async def fake_execute_search(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._fetch_page_text",
+        fake_fetch_page_text,
+    )
+    monkeypatch.setattr(
+        "app.mcp.commerce_public_server._execute_editorial_search",
+        fake_execute_search,
+    )
+
+    observations = await _collect_editorial_review_observations(
+        "Google Pixel 9 professional editorial reviews",
+        max_results=1,
+    )
+
+    assert observations == []
 
 
 def test_product_compare_v2_accepts_walmart_generic_product_search_price():

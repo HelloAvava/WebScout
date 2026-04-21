@@ -8,7 +8,7 @@ import json
 from inspect import Parameter, Signature
 import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, unquote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote_plus, urlparse
 
 from mcp.server.fastmcp import FastMCP
 import requests
@@ -19,6 +19,10 @@ from app.tool.web_search import SearchResult, WebContentFetcher, WebSearch
 logger = logging.getLogger(__name__)
 
 SEARCH_TIMEOUT_SECONDS = 20
+EDITORIAL_SEARCH_TIMEOUT_SECONDS = 8
+EDITORIAL_SEARCH_QUERY_LIMIT = 3
+EDITORIAL_DIRECT_URL_CANDIDATE_LIMIT = 6
+EDITORIAL_DIRECT_URL_FETCH_TIMEOUT_SECONDS = 4
 FETCH_TIMEOUT_SECONDS = 10
 GOOGLE_STORE_FETCH_TIMEOUT_SECONDS = 8
 MIN_USEFUL_STRUCTURED_REVIEW_BATCH_SIZE = 8
@@ -245,6 +249,15 @@ EDITORIAL_REVIEW_SIGNAL_TERMS = {
     "pros",
     "cons",
     "verdict",
+}
+EDITORIAL_UNUSABLE_TEXT_PATTERNS = {
+    "page not found",
+    "isn't available right now",
+    "is not available right now",
+    "no longer exists",
+    "temporarily not available",
+    "404 not found",
+    "error 404",
 }
 MIRROR_SUPPORTED_HOSTS = {
     "amazon.com",
@@ -3456,9 +3469,39 @@ def _editorial_review_query(query: str) -> str:
     return f'"{product}" review long term pros cons buying guide problems'.strip()
 
 
+def _editorial_review_url_candidates(product_hint: str) -> List[str]:
+    product = _clean_review_product_query(product_hint, "Editorial Web")
+    qualified_product = _qualify_product_query(product)
+    slugs = list(
+        dict.fromkeys(
+            slug
+            for slug in [_slugify(qualified_product), _slugify(product)]
+            if slug
+        )
+    )
+    if not slugs:
+        return []
+    candidates: List[str] = []
+    for slug in slugs:
+        candidates.extend(
+            [
+                f"https://www.digitaltrends.com/phones/{slug}-review/",
+                f"https://www.tomsguide.com/phones/google-pixel-phones/{slug}-review",
+                f"https://www.techradar.com/phones/google-pixel-phones/{slug}-review",
+                f"https://www.cnet.com/tech/mobile/{slug}-review/",
+                f"https://www.pcmag.com/reviews/{slug}",
+                f"https://www.wired.com/review/{slug}/",
+                f"https://www.trustedreviews.com/reviews/{slug}",
+                f"https://www.expertreviews.co.uk/{slug}",
+                f"https://www.androidauthority.com/{slug}-review/",
+            ]
+        )
+    return list(dict.fromkeys(candidates))
+
+
 def _editorial_review_queries(query: str) -> List[str]:
     product = _clean_review_product_query(query, "Editorial Web")
-    queries = [
+    queries: List[str] = [
         _editorial_review_query(query),
         f'"{product}" professional review verdict battery performance complaints'.strip(),
         f'"{product}" expert review should you buy'.strip(),
@@ -3499,6 +3542,237 @@ def _is_editorial_review_result(result: SearchResult, product_hint: str) -> bool
     return _matches_product_hint(title, description, product_hint)
 
 
+def _is_unusable_editorial_text(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(pattern in lowered for pattern in EDITORIAL_UNUSABLE_TEXT_PATTERNS)
+
+
+def _editorial_title_from_text(text: str, fallback: str) -> str:
+    for line in (text or "").splitlines():
+        cleaned = re.sub(r"\s+", " ", _strip_markup(line)).strip(" #*-|")
+        if 8 <= len(cleaned) <= 180:
+            return cleaned
+    return fallback
+
+
+def _decode_duckduckgo_html_result_url(href: str) -> str:
+    href = html.unescape(href or "").strip()
+    if href.startswith("//"):
+        href = f"https:{href}"
+    elif href.startswith("/"):
+        href = f"https://duckduckgo.com{href}"
+    parsed = urlparse(href)
+    params = parse_qs(parsed.query)
+    uddg = params.get("uddg")
+    if uddg:
+        return uddg[0]
+    return href
+
+
+def _extract_duckduckgo_html_results(
+    body: str,
+    *,
+    num_results: int,
+) -> List[SearchResult]:
+    results: List[SearchResult] = []
+    seen_urls: set[str] = set()
+    for match in re.finditer(
+        r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        body or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        anchor = match.group(0)
+        href = html.unescape(match.group(1))
+        if (
+            "uddg=" not in href
+            and "result__a" not in anchor
+            and "result-link" not in anchor
+        ):
+            continue
+        url = _decode_duckduckgo_html_result_url(href)
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if "duckduckgo.com" in parsed.netloc.lower():
+            continue
+        if url in seen_urls:
+            continue
+        title = re.sub(
+            r"\s+",
+            " ",
+            _strip_markup(html.unescape(match.group(2))).strip(),
+        )
+        if not title:
+            continue
+        seen_urls.add(url)
+        results.append(
+            SearchResult(
+                position=len(results) + 1,
+                url=url,
+                title=title,
+                description="",
+                source="duckduckgo_html",
+            )
+        )
+        if len(results) >= num_results:
+            break
+    return results
+
+
+def _fetch_duckduckgo_html_results(
+    query: str,
+    *,
+    num_results: int,
+    country: str = "us",
+) -> List[SearchResult]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+        )
+    }
+    response = requests.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query, "kl": f"{country}-en"},
+        headers=headers,
+        timeout=EDITORIAL_SEARCH_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return _extract_duckduckgo_html_results(
+        response.text,
+        num_results=num_results,
+    )
+
+
+def _extract_startpage_html_results(
+    body: str,
+    *,
+    num_results: int,
+) -> List[SearchResult]:
+    results: List[SearchResult] = []
+    seen_urls: set[str] = set()
+    for match in re.finditer(
+        r"<a\b[^>]*class=[\"'][^\"']*result-title result-link[^\"']*[\"'][^>]*"
+        r"href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        body or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        url = html.unescape(match.group(1)).strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if url in seen_urls:
+            continue
+        title = re.sub(
+            r"\s+",
+            " ",
+            _strip_markup(html.unescape(match.group(2))).strip(),
+        )
+        if not title:
+            continue
+        snippet = ""
+        next_chunk = body[match.end() : match.end() + 2000]
+        snippet_match = re.search(
+            r"<p\b[^>]*class=[\"'][^\"']*description[^\"']*[\"'][^>]*>(.*?)</p>",
+            next_chunk,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if snippet_match:
+            snippet = re.sub(
+                r"\s+",
+                " ",
+                _strip_markup(html.unescape(snippet_match.group(1))).strip(),
+            )
+        seen_urls.add(url)
+        results.append(
+            SearchResult(
+                position=len(results) + 1,
+                url=url,
+                title=title,
+                description=snippet,
+                source="startpage_html",
+            )
+        )
+        if len(results) >= num_results:
+            break
+    return results
+
+
+def _fetch_startpage_html_results(
+    query: str,
+    *,
+    num_results: int,
+) -> List[SearchResult]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+        )
+    }
+    response = requests.get(
+        "https://www.startpage.com/sp/search",
+        params={"query": query},
+        headers=headers,
+        timeout=EDITORIAL_SEARCH_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return _extract_startpage_html_results(
+        response.text,
+        num_results=num_results,
+    )
+
+
+async def _execute_editorial_search(
+    query: str,
+    *,
+    num_results: int,
+    lang: str = "en",
+    country: str = "us",
+) -> List[SearchResult]:
+    for fetcher, kwargs in [
+        (_fetch_startpage_html_results, {"num_results": num_results}),
+        (
+            _fetch_duckduckgo_html_results,
+            {"num_results": num_results, "country": country},
+        ),
+    ]:
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(fetcher, query, **kwargs),
+                timeout=EDITORIAL_SEARCH_TIMEOUT_SECONDS + 2,
+            )
+            if results:
+                return results
+        except Exception:
+            pass
+
+    try:
+        search_items = await asyncio.wait_for(
+            web_search._perform_search_with_engine(
+                web_search._search_engine["duckduckgo"],
+                query,
+                num_results,
+                {"lang": lang, "country": country},
+            ),
+            timeout=EDITORIAL_SEARCH_TIMEOUT_SECONDS,
+        )
+        if search_items:
+            return [
+                SearchResult(
+                    position=index + 1,
+                    url=item.url,
+                    title=item.title or f"Result {index + 1}",
+                    description=item.description or "",
+                    source="duckduckgo",
+                )
+                for index, item in enumerate(search_items)
+                if (item.url or "").startswith(("http://", "https://"))
+            ]
+    except Exception:
+        pass
+    return []
+
+
 def _rank_editorial_review_observation(
     item: Dict[str, Any], product_hint: str
 ) -> float:
@@ -3528,9 +3802,60 @@ async def _collect_editorial_review_observations(
     product_hint = _clean_review_product_query(query, "Editorial Web")
     observations: List[Dict[str, Any]] = []
     seen_urls: set[str] = set()
+    seen_direct_domains: set[str] = set()
 
-    for search_query in _editorial_review_queries(query):
-        results = await _execute_search(
+    for url in _editorial_review_url_candidates(product_hint)[
+        :EDITORIAL_DIRECT_URL_CANDIDATE_LIMIT
+    ]:
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        parsed = urlparse(url)
+        domain = re.sub(r"^www\.", "", parsed.netloc.lower())
+        if domain in seen_direct_domains:
+            continue
+        seen_direct_domains.add(domain)
+        try:
+            fetched_text = await asyncio.wait_for(
+                _fetch_page_text(url),
+                timeout=EDITORIAL_DIRECT_URL_FETCH_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            fetched_text = ""
+        if not fetched_text or _is_unusable_editorial_text(fetched_text):
+            continue
+        title = _editorial_title_from_text(fetched_text, f"{product_hint} review")
+        if not _matches_product_hint(title, fetched_text, product_hint):
+            continue
+        observations.append(
+            _make_observation(
+                platform="Editorial Web",
+                title=title,
+                url=url,
+                snippet=_strip_markup(fetched_text)[:500],
+                extracted_text=_strip_markup(fetched_text)[:1600],
+                source_type="media",
+                credibility=0.82 if domain in EDITORIAL_REVIEW_DOMAINS else 0.74,
+                metadata={
+                    "mcp_kind": "reviews",
+                    "strategy": "editorial_direct_url",
+                    "source_domain": domain,
+                },
+            )
+        )
+        if len(observations) >= max_results:
+            break
+
+    if observations:
+        observations = _dedupe_review_observations(observations)
+        observations.sort(
+            key=lambda item: _rank_editorial_review_observation(item, product_hint),
+            reverse=True,
+        )
+        return observations[:max_results]
+
+    for search_query in _editorial_review_queries(query)[:EDITORIAL_SEARCH_QUERY_LIMIT]:
+        results = await _execute_editorial_search(
             search_query,
             num_results=max(max_results * 2, 8),
             lang="en",
@@ -3550,7 +3875,11 @@ async def _collect_editorial_review_observations(
                     fetched_text = await _fetch_page_text(result.url)
                 except Exception:
                     fetched_text = ""
-            extracted_text = _strip_markup(fetched_text)[:1600] if fetched_text else ""
+            extracted_text = (
+                _strip_markup(fetched_text)[:1600]
+                if fetched_text and not _is_unusable_editorial_text(fetched_text)
+                else ""
+            )
             observations.append(
                 _make_observation(
                     platform="Editorial Web",

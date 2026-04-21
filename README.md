@@ -17,11 +17,52 @@ The current main workflow is `product_compare_v2`: a policy-driven product compa
 
 ```mermaid
 flowchart TB
-  U["User prompt"] --> F["CommerceDecisionFlow"]
-  F --> P["Planner<br/>identity + source policy + tasks"]
-  P --> E["Executor<br/>direct collectors + MCP + browser fallback"]
-  E --> R["Reviewer<br/>coverage check + follow-up"]
-  R --> O["DecisionReport<br/>Markdown report"]
+  U["用户请求 / run_commerce.py"] --> F["CommerceDecisionFlow<br/>LangGraph 编排"]
+  F --> P["Planner<br/>商品识别、来源策略、任务图"]
+  P --> PL["CommercePlan<br/>tasks + comparison_subject"]
+  PL --> E["CommerceResearchExecutor<br/>采集与诊断"]
+  E --> D["Direct public collectors<br/>价格、官方、零售评论、YouTube、Reddit"]
+  E --> M["CommerceMCPBridge<br/>可选 MCP 工具选择与归一化"]
+  E --> B["CommerceBrowserController<br/>公开浏览器 / 本机会话浏览器"]
+  D --> EV["EvidenceItem / PriceObservation / diagnostics"]
+  M --> EV
+  B --> EV
+  EV --> R["Reviewer<br/>覆盖率复核与一次 follow-up"]
+  R --> O["DecisionReport.to_markdown()<br/>最终中文/英文报告"]
+```
+
+## Runtime Sequence
+
+```mermaid
+sequenceDiagram
+  participant User as 用户
+  participant Flow as CommerceDecisionFlow
+  participant Planner as Planner
+  participant Exec as Executor
+  participant Direct as Public Collectors
+  participant MCP as MCP Bridge
+  participant Browser as Browser Controller
+  participant Reviewer as Reviewer
+
+  User->>Flow: prompt / profile / browser mode
+  Flow->>Planner: _create_plan()
+  Planner-->>Flow: CommercePlan(tasks, comparison_subject)
+  loop 每个 CommerceTask
+    Flow->>Exec: execute_task(task)
+    Exec->>Direct: direct product_compare_v2 collector
+    Direct-->>Exec: structured observations or diagnostics
+    Exec->>MCP: collect(task)
+    MCP-->>Exec: normalized evidence or diagnostics
+    Exec->>Browser: search/browser fallback when allowed
+    Browser-->>Exec: page evidence or blocked reason
+    Exec-->>Flow: EvidenceItem[]
+  end
+  Flow->>Reviewer: coverage + diagnostics
+  alt 覆盖不足且未超过 follow-up 上限
+    Reviewer-->>Flow: follow-up tasks
+  else 覆盖足够或已耗尽补采
+    Reviewer-->>Flow: DecisionReport
+  end
 ```
 
 Key implementation files:

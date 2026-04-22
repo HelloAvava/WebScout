@@ -42,9 +42,9 @@ SEARCH_TIMEOUT_SECONDS = 45
 SOCIAL_SEARCH_TIMEOUT_SECONDS = 18
 DIRECT_COLLECTION_TIMEOUT_SECONDS = 35
 MCP_COLLECTION_TIMEOUT_SECONDS = 35
-PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 45
+PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 75
 PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS = 45
-PRODUCT_COMPARE_V2_MARKETPLACE_MCP_COLLECTION_TIMEOUT_SECONDS = 15
+PRODUCT_COMPARE_V2_MARKETPLACE_MCP_COLLECTION_TIMEOUT_SECONDS = 35
 PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS = 120
 BROWSER_NAVIGATION_TIMEOUT_SECONDS = 45
 BROWSER_EXTRACTION_TIMEOUT_SECONDS = 90
@@ -1821,7 +1821,7 @@ class CommerceResearchExecutor:
                     task.query,
                     platform=task.platform,
                     max_results=min(task.max_results, 2),
-                    allow_search_fallback=False,
+                    allow_search_fallback=True,
                 )
             if task.source_role == "review_marketplace":
                 return await _collect_marketplace_review_observations(

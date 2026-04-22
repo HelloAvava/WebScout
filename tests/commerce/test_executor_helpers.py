@@ -855,6 +855,23 @@ def test_clean_product_query_prefers_supported_product_identity_over_task_words(
     )
 
 
+def test_clean_product_query_can_preserve_explicit_macbook_configuration():
+    query = (
+        "Compare Apple 14-inch MacBook Pro M4 16GB memory 512GB SSD "
+        "Space Black price Amazon"
+    )
+
+    assert _clean_product_query(query, "Amazon") == "14-inch MacBook Pro M4"
+    assert (
+        _clean_product_query(query, "Amazon", include_configuration=True)
+        == "14-inch MacBook Pro M4 16GB memory 512GB SSD Space Black"
+    )
+    assert (
+        _marketplace_direct_keyword(query, "Amazon")
+        == "Apple 14-inch MacBook Pro M4 16GB memory 512GB SSD Space Black"
+    )
+
+
 def test_clean_product_query_removes_platform_words_for_generic_products():
     assert (
         _clean_product_query("Ninja Creami Deluxe price Walmart", "Walmart")
@@ -972,6 +989,29 @@ Discover more products with sustainability features.
 
     assert observations
     assert observations[0]["price"]["price_text"] == "$1,599.00"
+
+
+def test_matches_product_hint_accepts_reordered_macbook_configuration():
+    product_hint = "Apple 14-inch MacBook Pro M4 16GB memory 512GB SSD Space Black"
+
+    assert _matches_product_hint(
+        "2024 Apple MacBook Pro with Apple M4 Chip with 10-core CPU "
+        "(14.2-inch, 16GB RAM, 512GB SSD Storage) Space Black",
+        "",
+        product_hint,
+    )
+    assert not _matches_product_hint(
+        "2024 MacBook Pro Laptop with M4 Pro, 24GB Unified Memory, "
+        "512GB SSD Storage; Space Black",
+        "",
+        product_hint,
+    )
+    assert not _matches_product_hint(
+        "2024 MacBook Pro Laptop with M4 chip, 16GB Unified Memory, "
+        "512GB SSD Storage; Silver",
+        "",
+        product_hint,
+    )
 
 
 def test_extract_amazon_mirror_observations_rejects_split_alpha_phrase_matches():
@@ -2140,6 +2180,26 @@ def test_bestbuy_mirror_parser_extracts_unlocked_price():
     assert observations[0]["metadata"]["offer_condition"] == "unlocked_new"
 
 
+def test_bestbuy_mirror_parser_allows_refurbished_exact_sku_as_degraded():
+    text = """
+* [### Apple - Geek Squad Certified Refurbished MacBook Pro 14-inch Apple M4 chip Built for Apple Intelligence- 16GB Memory - 512GB SSD - Space Black](https://www.bestbuy.com/product/apple-geek-squad-certified-refurbished-macbook-pro-14-inch-apple-m4-chip-built-for-apple-intelligence-16gb-memory-512gb-ssd-space-black/JCQ6HK8TRJ)
+[Rating 4.4 out of 5 stars with 5 reviews](https://www.bestbuy.com/product/apple-geek-squad-certified-refurbished-macbook-pro-14-inch-apple-m4-chip-built-for-apple-intelligence-16gb-memory-512gb-ssd-space-black/JCQ6HK8TRJ#tabbed-customerreviews) $1,299.99 Save $299.01 Pick up Tue
+"""
+
+    observations = _extract_bestbuy_mirror_observations(
+        text,
+        platform="Best Buy",
+        max_results=3,
+        product_hint="Apple 14-inch MacBook Pro M4 16GB memory 512GB SSD Space Black",
+        allow_degraded_fallback=True,
+    )
+
+    assert len(observations) == 1
+    assert observations[0]["price"]["price_text"] == "$1,299.99"
+    assert observations[0]["metadata"]["quote_quality"] == "degraded_marketplace"
+    assert observations[0]["metadata"]["offer_condition"] == "refurbished_or_renewed"
+
+
 def test_bestbuy_mirror_parser_prefers_exact_model_over_newer_generation():
     text = """
 [### Google - Pixel 10 256B (Unlocked) - Lemongrass](https://www.bestbuy.com/product/google-pixel-10-256b-unlocked-lemongrass/J39TC8JGF9/sku/6637718)
@@ -2256,6 +2316,47 @@ Price, product page[$443.47](https://www.amazon.com/galaxy-s25-renewed)
     assert len(observations) == 1
     assert observations[0]["metadata"]["quote_quality"] == "degraded_marketplace"
     assert observations[0]["metadata"]["offer_condition"] == "refurbished_or_renewed"
+
+
+@pytest.mark.asyncio
+async def test_marketplace_collector_returns_same_page_degraded_exact_sku(
+    monkeypatch,
+):
+    text = """
+## [2024 Apple MacBook Pro with Apple M4 Chip with 10-core CPU (14.2-inch, 16GB RAM, 512GB SSD Storage) (QWERTY English) Space Black (Renewed)](https://www.amazon.com/Apple-MacBook-10-core-14-2-inch-Storage/dp/B0FD4PJ3KD)
+Price, product page[$1,349.00](https://www.amazon.com/Apple-MacBook-10-core-14-2-inch-Storage/dp/B0FD4PJ3KD)
+FREE delivery Apr 24 - 27
+    """
+
+    async def fake_fetch_public_mirror_text(url: str, timeout_seconds: int | None = None):
+        return text
+
+    monkeypatch.setattr(
+        commerce_public_server,
+        "_fetch_public_mirror_text",
+        fake_fetch_public_mirror_text,
+    )
+    monkeypatch.setattr(
+        commerce_public_server,
+        "_marketplace_search_urls",
+        lambda query, platform: ["https://www.amazon.com/s?k=macbook"],
+    )
+    monkeypatch.setattr(
+        commerce_public_server,
+        "_marketplace_degraded_search_url",
+        lambda query, platform: "",
+    )
+
+    observations = await _collect_marketplace_observations(
+        "Apple 14-inch MacBook Pro M4 16GB memory 512GB SSD Space Black price Amazon",
+        platform="Amazon",
+        max_results=2,
+        allow_search_fallback=False,
+    )
+
+    assert len(observations) == 1
+    assert observations[0]["price"]["price_text"] == "$1,349.00"
+    assert observations[0]["metadata"]["quote_quality"] == "degraded_marketplace"
 
 
 def test_google_official_price_extractor_reads_config_page_price():
@@ -2547,7 +2648,7 @@ async def test_stable_executor_prefers_direct_public_collectors(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_product_compare_v2_marketplace_direct_collection_uses_mirror_only(
+async def test_product_compare_v2_marketplace_direct_collection_allows_guarded_search_fallback(
     monkeypatch,
 ):
     executor = CommerceResearchExecutor(execution_profile="product_compare_v2")
@@ -2595,7 +2696,7 @@ async def test_product_compare_v2_marketplace_direct_collection_uses_mirror_only
 
     evidence = await executor.execute_task(task)
 
-    assert captured["allow_search_fallback"] is False
+    assert captured["allow_search_fallback"] is True
     assert len(evidence) == 1
     assert evidence[0].price is not None
 
@@ -3683,6 +3784,7 @@ async def test_product_compare_v2_direct_marketplace_collection_caps_price_resul
         allow_search_fallback: bool = True,
     ):
         captured["max_results"] = max_results
+        captured["allow_search_fallback"] = allow_search_fallback
         return []
 
     monkeypatch.setattr(
@@ -3693,6 +3795,7 @@ async def test_product_compare_v2_direct_marketplace_collection_caps_price_resul
     await executor._collect_product_compare_v2_observations(task)
 
     assert captured["max_results"] == 2
+    assert captured["allow_search_fallback"] is True
 
 
 @pytest.mark.asyncio

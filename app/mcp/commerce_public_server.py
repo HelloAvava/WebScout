@@ -426,7 +426,10 @@ def _tokenize_identity_text(text: str) -> List[str]:
 
 
 def _identity_tokens(product_hint: str) -> List[str]:
-    cleaned_hint = _clean_product_query(product_hint).lower()
+    cleaned_hint = _clean_product_query(
+        product_hint,
+        include_configuration=True,
+    ).lower()
     return [
         token
         for token in _tokenize_identity_text(cleaned_hint)
@@ -449,7 +452,69 @@ def _identity_tokens(product_hint: str) -> List[str]:
     ]
 
 
-def _clean_product_query(query: str, platform: str = "") -> str:
+def _format_capacity_for_query(value: str) -> str:
+    match = re.fullmatch(r"(?P<number>\d+(?:\.\d+)?)(?P<unit>gb|tb)", value or "")
+    if not match:
+        return value
+    number = match.group("number").rstrip("0").rstrip(".")
+    return f"{number}{match.group('unit').upper()}"
+
+
+def _format_chip_for_query(value: str) -> str:
+    parts = (value or "").split()
+    if not parts:
+        return ""
+    chip = parts[0].upper()
+    tier = " ".join(part.capitalize() for part in parts[1:])
+    return f"{chip} {tier}".strip()
+
+
+def _format_color_for_query(value: str) -> str:
+    return " ".join(part.capitalize() for part in (value or "").split())
+
+
+def _query_contains_config_value(query: str, value: str) -> bool:
+    if not query or not value:
+        return False
+    normalized_query = re.sub(r"[^a-z0-9]+", "", query.lower())
+    normalized_value = re.sub(r"[^a-z0-9]+", "", value.lower())
+    return bool(normalized_value and normalized_value in normalized_query)
+
+
+def _append_configuration_terms(product: str, configuration: Dict[str, str]) -> str:
+    if not configuration:
+        return product
+
+    terms: List[str] = []
+    size = configuration.get("size") or ""
+    chip = configuration.get("chip") or ""
+    memory = configuration.get("memory") or ""
+    storage = configuration.get("storage") or ""
+    color = configuration.get("color") or ""
+    market = configuration.get("market") or ""
+
+    if size and not _query_contains_config_value(product, size):
+        terms.append(size)
+    if chip and not _query_contains_config_value(product, chip):
+        terms.append(_format_chip_for_query(chip))
+    if memory and not _query_contains_config_value(product, memory):
+        terms.append(f"{_format_capacity_for_query(memory)} memory")
+    if storage and not _query_contains_config_value(product, storage):
+        terms.append(f"{_format_capacity_for_query(storage)} SSD")
+    if color and not _query_contains_config_value(product, color):
+        terms.append(_format_color_for_query(color))
+    if market and not _query_contains_config_value(product, market):
+        terms.append(market)
+
+    return " ".join([product, *terms]).strip()
+
+
+def _clean_product_query(
+    query: str,
+    platform: str = "",
+    *,
+    include_configuration: bool = False,
+) -> str:
     raw = (query or "").strip()
     from app.commerce.policy import detect_product_identity
 
@@ -461,6 +526,11 @@ def _clean_product_query(query: str, platform: str = "") -> str:
         model_name = re.sub(r"(?:^|\s)-[^\s]+", " ", model_name)
         model_name = re.sub(r"\bnew\b", " ", model_name, flags=re.IGNORECASE)
         model_name = " ".join(model_name.split())
+        if include_configuration:
+            model_name = _append_configuration_terms(
+                model_name,
+                identity.configuration,
+            )
         return model_name or identity.model_name.strip()
 
     cleaned = raw
@@ -695,7 +765,9 @@ def _looks_like_phone_query(query: str) -> bool:
 
 
 def _marketplace_search_keyword(query: str, platform: str) -> str:
-    product = _qualify_product_query(_clean_product_query(query, platform))
+    product = _qualify_product_query(
+        _clean_product_query(query, platform, include_configuration=True)
+    )
     lowered = product.lower()
     additions: List[str] = []
     exclusions = [
@@ -743,7 +815,9 @@ def _marketplace_search_keyword(query: str, platform: str) -> str:
 
 
 def _marketplace_direct_keyword(query: str, platform: str) -> str:
-    product = _qualify_product_query(_clean_product_query(query, platform))
+    product = _qualify_product_query(
+        _clean_product_query(query, platform, include_configuration=True)
+    )
     lowered = product.lower()
     additions: List[str] = []
     if _looks_like_phone_query(product) and "unlocked" not in lowered:
@@ -1262,7 +1336,9 @@ def _make_observation(
 
 
 def _marketplace_search_query(query: str, platform: str) -> str:
-    product = _qualify_product_query(_clean_product_query(query, platform))
+    product = _qualify_product_query(
+        _clean_product_query(query, platform, include_configuration=True)
+    )
     domain = MARKETPLACE_DOMAINS[platform]
     lowered = product.lower()
     terms = [f"site:{domain}", f'"{product}"']
@@ -1288,7 +1364,9 @@ def _marketplace_search_query(query: str, platform: str) -> str:
 
 
 def _marketplace_broad_search_query(query: str, platform: str) -> str:
-    product = _qualify_product_query(_clean_product_query(query, platform))
+    product = _qualify_product_query(
+        _clean_product_query(query, platform, include_configuration=True)
+    )
     lowered = product.lower()
     terms = [f'"{product}"', f'"{platform}"']
     if _looks_like_phone_query(product):
@@ -1779,10 +1857,13 @@ def _is_low_quality_marketplace_title(title: str, body: str = "") -> bool:
 
 
 def _matches_product_hint(title: str, body: str, product_hint: str) -> bool:
-    from app.commerce.policy import has_configuration_conflict
+    from app.commerce.policy import detect_product_identity, has_configuration_conflict
 
     tokens = _identity_tokens(product_hint)
-    cleaned_hint = _clean_product_query(product_hint).lower()
+    cleaned_hint = _clean_product_query(
+        product_hint,
+        include_configuration=True,
+    ).lower()
     if not cleaned_hint or not tokens:
         return True
 
@@ -1824,11 +1905,38 @@ def _matches_product_hint(title: str, body: str, product_hint: str) -> bool:
         return False
     if exact_tokens:
         normalized_haystack = re.sub(r"[^a-z0-9]+", " ", haystack).strip()
-        ordered_model_pattern = (
-            r"\b" + r"\s+".join(re.escape(token) for token in tokens[:4]) + r"\b"
-        )
-        if not re.search(ordered_model_pattern, normalized_haystack):
-            return False
+        identity = detect_product_identity(product_hint)
+        if (identity.family or "").lower() == "macbook":
+            model_name = (identity.model_name or cleaned_hint).lower()
+            if "macbook pro" in model_name:
+                model_phrase_pattern = r"\bmacbook\s+pro\b"
+            elif "macbook air" in model_name:
+                model_phrase_pattern = r"\bmacbook\s+air\b"
+            else:
+                model_phrase_pattern = r"\bmacbook\b"
+            if not re.search(model_phrase_pattern, normalized_haystack):
+                return False
+        else:
+            ordered_model_pattern = (
+                r"\b" + r"\s+".join(re.escape(token) for token in tokens[:4]) + r"\b"
+            )
+            if not re.search(ordered_model_pattern, normalized_haystack):
+                return False
+        if (identity.family or "").lower() == "macbook" and "m4" in cleaned_hint:
+            if not re.search(r"\bm4\b", normalized_haystack):
+                return False
+        if (identity.family or "").lower() == "macbook" and "m5" in cleaned_hint:
+            if not re.search(r"\bm5\b", normalized_haystack):
+                return False
+        if (identity.family or "").lower() == "macbook" and "m3" in cleaned_hint:
+            if not re.search(r"\bm3\b", normalized_haystack):
+                return False
+        if (identity.family or "").lower() == "macbook" and "m2" in cleaned_hint:
+            if not re.search(r"\bm2\b", normalized_haystack):
+                return False
+        if (identity.family or "").lower() == "macbook" and "m1" in cleaned_hint:
+            if not re.search(r"\bm1\b", normalized_haystack):
+                return False
     if cleaned_hint in haystack:
         return True
     if alpha_tokens and not exact_tokens and len(tokens) <= 4:
@@ -2247,8 +2355,10 @@ def _extract_bestbuy_mirror_observations(
     platform: str,
     max_results: int,
     product_hint: str = "",
+    allow_degraded_fallback: bool = False,
 ) -> List[Dict[str, Any]]:
-    observations: List[Dict[str, Any]] = []
+    strict_observations: List[Dict[str, Any]] = []
+    degraded_observations: List[Dict[str, Any]] = []
     seen_urls: set[str] = set()
     matches = [
         match
@@ -2275,7 +2385,17 @@ def _extract_bestbuy_mirror_observations(
                 break
         if not title or not url or url in seen_urls:
             continue
-        if _is_low_quality_marketplace_title(title, body):
+        offer_condition = _infer_offer_condition(title, body)
+        is_refurbished = _contains_token_phrase(
+            f"{title} {body}".lower(),
+            REFURBISHED_TOKENS,
+        )
+        is_low_quality = _is_low_quality_marketplace_title(title, body)
+        if is_low_quality and not (
+            allow_degraded_fallback
+            and is_refurbished
+            and offer_condition == "refurbished_or_renewed"
+        ):
             continue
         if _looks_like_phone_query(product_hint) and not _matches_listing_identity(
             title, url, product_hint
@@ -2301,7 +2421,21 @@ def _extract_bestbuy_mirror_observations(
         if not price:
             continue
 
-        observations.append(
+        metadata = {
+            "mcp_kind": "pricing",
+            "strategy": "mirror_search_page",
+            "availability": _extract_availability(body) or "",
+            "offer_condition": offer_condition,
+        }
+        credibility = 0.92
+        target = strict_observations
+        if is_low_quality:
+            metadata["strategy"] = "mirror_search_page_degraded"
+            metadata["quote_quality"] = "degraded_marketplace"
+            credibility = 0.74
+            target = degraded_observations
+
+        target.append(
             _make_observation(
                 platform=platform,
                 title=title,
@@ -2309,23 +2443,25 @@ def _extract_bestbuy_mirror_observations(
                 snippet=body[:1200],
                 extracted_text=body,
                 source_type="marketplace",
-                credibility=0.92,
+                credibility=credibility,
                 price=price,
-                metadata={
-                    "mcp_kind": "pricing",
-                    "strategy": "mirror_search_page",
-                    "availability": _extract_availability(body) or "",
-                    "offer_condition": _infer_offer_condition(title, body),
-                },
+                metadata=metadata,
             )
         )
         seen_urls.add(url)
 
-    observations.sort(
+    strict_observations.sort(
         key=lambda item: _rank_price_observation(item, product_hint),
         reverse=True,
     )
-    return observations[:max_results]
+    if strict_observations:
+        return strict_observations[:max_results]
+
+    degraded_observations.sort(
+        key=lambda item: _rank_price_observation(item, product_hint),
+        reverse=True,
+    )
+    return degraded_observations[:max_results]
 
 
 def _marketplace_price_card_pattern(platform: str) -> Optional[re.Pattern[str]]:
@@ -2557,6 +2693,7 @@ def _extract_marketplace_mirror_observations(
             platform=platform,
             max_results=max_results,
             product_hint=product_hint,
+            allow_degraded_fallback=allow_degraded_fallback,
         )
     if platform in {"Target", "B&H", "Newegg"}:
         return _extract_link_card_marketplace_observations(
@@ -2628,6 +2765,16 @@ def _dedupe_price_observations(observations: List[Dict[str, Any]]) -> List[Dict[
         seen_keys.add(key)
         deduped.append(item)
     return deduped
+
+
+def _has_clean_price_observation(observations: List[Dict[str, Any]]) -> bool:
+    for item in observations:
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            return True
+        if metadata.get("quote_quality") != "degraded_marketplace":
+            return True
+    return False
 
 
 def _looks_like_marketplace_review_signal(text: str) -> bool:
@@ -3074,7 +3221,11 @@ async def _collect_marketplace_observations(
     allow_search_fallback: bool = True,
 ) -> List[Dict[str, Any]]:
     search_query = _marketplace_search_query(query, platform)
-    product_hint = _clean_product_query(query, platform)
+    product_hint = _clean_product_query(
+        query,
+        platform,
+        include_configuration=True,
+    )
     observations: List[Dict[str, Any]] = []
     search_page_urls = _marketplace_search_urls(query, platform)
     for search_page_url in search_page_urls:
@@ -3092,10 +3243,20 @@ async def _collect_marketplace_observations(
                     max_results=max_results,
                     product_hint=product_hint,
                 )
+                if not extracted:
+                    extracted = _extract_marketplace_mirror_observations(
+                        mirror_text,
+                        platform=platform,
+                        max_results=max_results,
+                        product_hint=product_hint,
+                        allow_degraded_fallback=True,
+                    )
             if extracted:
                 observations.extend(extracted)
                 break
-        if len(observations) >= max_results:
+        if len(observations) >= max_results and _has_clean_price_observation(
+            observations
+        ):
             return observations[:max_results]
 
     if not observations:
@@ -3113,11 +3274,11 @@ async def _collect_marketplace_observations(
                     )
                 )
 
-    if len(observations) >= max_results:
+    if len(observations) >= max_results and _has_clean_price_observation(observations):
         return observations[:max_results]
 
     if not allow_search_fallback:
-        return observations[:max_results]
+        return _dedupe_price_observations(observations)[:max_results]
 
     seen_urls = {str(item["url"]) for item in observations}
     search_result_limit = min(max(max_results * 4, 8), 12)
@@ -4582,7 +4743,7 @@ class MarketplacePriceSearchTool(BaseTool):
             query,
             platform=resolved_platform,
             max_results=max_results,
-            allow_search_fallback=False,
+            allow_search_fallback=True,
         )
         return ToolResult(output=json.dumps({"observations": observations}, ensure_ascii=False))
 

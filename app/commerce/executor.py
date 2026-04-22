@@ -44,6 +44,7 @@ DIRECT_COLLECTION_TIMEOUT_SECONDS = 35
 MCP_COLLECTION_TIMEOUT_SECONDS = 35
 PRODUCT_COMPARE_V2_DIRECT_COLLECTION_TIMEOUT_SECONDS = 45
 PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS = 45
+PRODUCT_COMPARE_V2_MARKETPLACE_MCP_COLLECTION_TIMEOUT_SECONDS = 15
 PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS = 120
 BROWSER_NAVIGATION_TIMEOUT_SECONDS = 45
 BROWSER_EXTRACTION_TIMEOUT_SECONDS = 90
@@ -678,6 +679,20 @@ def _extract_variant_tokens(text: str) -> set[str]:
     }
 
 
+def _extract_strong_model_codes(text: str) -> set[str]:
+    codes: set[str] = set()
+    for match in re.finditer(
+        r"\b[a-z]{1,8}[\s_-]?\d{2,}[a-z0-9_-]*\b|\b\d{2,}[a-z]{1,8}\d*\b",
+        (text or "").lower(),
+    ):
+        normalized = re.sub(r"[^a-z0-9]", "", match.group(0))
+        if re.match(r"(iphone|galaxy|pixel)\d+[a-z]*$", normalized):
+            continue
+        if len(normalized) >= 4:
+            codes.add(normalized)
+    return codes
+
+
 def _build_model_pattern(model_name: str) -> str:
     tokens = [token for token in re.findall(r"[a-z0-9]+", model_name.lower()) if token]
     if not tokens:
@@ -748,6 +763,11 @@ def compute_model_match_score(task: CommerceTask, text: str) -> int:
         return 0
     if has_configuration_conflict(task.query, haystack):
         return 0
+    requested_model_codes = _extract_strong_model_codes(task.query)
+    if requested_model_codes:
+        normalized_haystack = re.sub(r"[^a-z0-9]", "", haystack)
+        if any(code in normalized_haystack for code in requested_model_codes):
+            return 100
     requested_variants = _extract_variant_tokens(identity.model_name or task.query)
     offered_variants = _extract_variant_tokens(haystack)
     if requested_variants:
@@ -859,8 +879,10 @@ def is_search_result_usable(
     return score_search_result(task, url, title, description) > 0
 
 
-def build_search_overrides(execution_profile: ExecutionProfile) -> Dict[str, str]:
-    if execution_profile in {STABLE_PUBLIC_WEB_PROFILE, PRODUCT_COMPARE_V2_PROFILE}:
+def build_search_overrides(execution_profile: ExecutionProfile) -> Dict[str, object]:
+    if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
+        return {"lang": "en", "country": "us", "max_retries": 0, "retry_delay": 0}
+    if execution_profile == STABLE_PUBLIC_WEB_PROFILE:
         return {"lang": "en", "country": "us"}
     return {}
 
@@ -1121,6 +1143,11 @@ def get_mcp_collection_timeout_seconds(
         and task.source_role == "review_editorial"
     ):
         return PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS
+    if (
+        execution_profile == PRODUCT_COMPARE_V2_PROFILE
+        and task.source_role == "marketplace"
+    ):
+        return PRODUCT_COMPARE_V2_MARKETPLACE_MCP_COLLECTION_TIMEOUT_SECONDS
     if execution_profile == PRODUCT_COMPARE_V2_PROFILE:
         return PRODUCT_COMPARE_V2_MCP_COLLECTION_TIMEOUT_SECONDS
     return MCP_COLLECTION_TIMEOUT_SECONDS

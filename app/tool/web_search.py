@@ -208,6 +208,8 @@ class WebSearch(BaseTool):
         lang: Optional[str] = None,
         country: Optional[str] = None,
         fetch_content: bool = False,
+        max_retries: Optional[int] = None,
+        retry_delay: Optional[int] = None,
     ) -> SearchResponse:
         """
         Execute a Web search and return detailed search results.
@@ -223,16 +225,18 @@ class WebSearch(BaseTool):
             A structured response containing search results and metadata
         """
         # Get settings from config
-        retry_delay = (
-            getattr(config.search_config, "retry_delay", 60)
-            if config.search_config
-            else 60
-        )
-        max_retries = (
-            getattr(config.search_config, "max_retries", 3)
-            if config.search_config
-            else 3
-        )
+        if retry_delay is None:
+            retry_delay = (
+                getattr(config.search_config, "retry_delay", 60)
+                if config.search_config
+                else 60
+            )
+        if max_retries is None:
+            max_retries = (
+                getattr(config.search_config, "max_retries", 3)
+                if config.search_config
+                else 3
+            )
 
         # Use config values for lang and country if not specified
         if lang is None:

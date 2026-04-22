@@ -458,6 +458,8 @@ def _clean_product_query(query: str, platform: str = "") -> str:
         model_name = identity.model_name.strip()
         for pattern in PRODUCT_INTENT_PATTERNS:
             model_name = re.sub(pattern, " ", model_name, flags=re.IGNORECASE)
+        model_name = re.sub(r"(?:^|\s)-[^\s]+", " ", model_name)
+        model_name = re.sub(r"\bnew\b", " ", model_name, flags=re.IGNORECASE)
         model_name = " ".join(model_name.split())
         return model_name or identity.model_name.strip()
 
@@ -498,10 +500,12 @@ def _clean_product_query(query: str, platform: str = "") -> str:
     for token in sorted((token for token in removable_tokens if token), key=len, reverse=True):
         cleaned = re.sub(re.escape(token), " ", cleaned, flags=re.IGNORECASE)
     removable_patterns = [
+        r"(?:^|\s)-[^\s]+",
         r"\bcurrent\b",
         r"\blatest\b",
         r"\brecent\b",
         r"\btoday'?s\b",
+        r"\bnew\b",
         r"\blong[\s-]*term\b",
         r"\breal[\s-]*user\b",
         r"\bhonest\b",

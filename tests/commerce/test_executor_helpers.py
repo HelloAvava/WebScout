@@ -11,6 +11,7 @@ from app.commerce.executor import (
     HIGH_ANTI_BOT_PLATFORMS,
     MCP_COLLECTION_TIMEOUT_SECONDS,
     PRODUCT_COMPARE_V2_EDITORIAL_COLLECTION_TIMEOUT_SECONDS,
+    PRODUCT_COMPARE_V2_MARKETPLACE_MCP_COLLECTION_TIMEOUT_SECONDS,
     PRODUCT_COMPARE_V2_PROFILE,
     SESSION_PREFERRED_PLATFORMS,
     build_platform_fallback_results,
@@ -325,6 +326,8 @@ def test_build_search_overrides_for_stable_public_web_profile():
     assert build_search_overrides("product_compare_v2") == {
         "lang": "en",
         "country": "us",
+        "max_retries": 0,
+        "retry_delay": 0,
     }
     assert build_search_overrides("default") == {}
 
@@ -346,6 +349,34 @@ def test_product_compare_v2_search_queries_preserve_pixel_model():
         for query in queries
     )
     assert all("Compare price" not in query for query in queries)
+
+
+def test_public_collector_product_query_strips_search_negative_operators():
+    query = (
+        "Ninja CREAMi Deluxe 11-in-1 ice cream maker model NC501 price Target new "
+        "-case -cases -cover -accessories -replacement -compatible -parts"
+    )
+
+    cleaned = _clean_product_query(query, "Target")
+
+    assert cleaned == "Ninja CREAMi Deluxe 11-in-1 ice cream maker model NC501"
+
+
+def test_product_compare_v2_accepts_strong_sku_even_with_variant_word():
+    task = CommerceTask(
+        category="pricing",
+        platform="Target",
+        query="Ninja CREAMi Deluxe 11-in-1 ice cream maker model NC501 price Target",
+        goal="collect Target price",
+        source_role="marketplace",
+    )
+    text = (
+        "Ninja CREAMi XL Deluxe 11-in-1 Ice Cream and Frozen Treat Maker. "
+        "Search instead for Ninja CREAMi Deluxe 11-in-1 ice cream maker model NC501. "
+        "$249.99"
+    )
+
+    assert compute_model_match_score(task, text) == 100
 
 
 def test_stable_public_web_prefers_direct_platform_fallback():
@@ -1871,7 +1902,7 @@ def test_product_compare_v2_collection_timeouts_allow_public_price_mirrors():
     )
     assert (
         get_mcp_collection_timeout_seconds(task, PRODUCT_COMPARE_V2_PROFILE)
-        >= MCP_COLLECTION_TIMEOUT_SECONDS
+        == PRODUCT_COMPARE_V2_MARKETPLACE_MCP_COLLECTION_TIMEOUT_SECONDS
     )
 
 

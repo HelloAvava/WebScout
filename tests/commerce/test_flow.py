@@ -928,6 +928,29 @@ async def test_product_compare_v2_plan_preserves_macbook_chip_suffix():
 
 
 @pytest.mark.asyncio
+async def test_product_compare_v2_plan_preserves_explicit_macbook_configuration():
+    flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
+
+    plan = await flow._create_plan(
+        "Compare Apple 14-inch MacBook Pro with M4 chip, 16GB unified memory, "
+        "512GB SSD, Space Black prices on Amazon and Best Buy."
+    )
+
+    assert plan.comparison_subject == ""
+    assert plan.product_identity is not None
+    assert plan.product_identity.configuration["chip"] == "m4"
+    assert plan.product_identity.configuration["memory"] == "16gb"
+    assert plan.product_identity.configuration["storage"] == "512gb"
+    assert plan.product_identity.configuration["color"] == "space black"
+    pricing_tasks = [task for task in plan.tasks if task.source_role == "marketplace"]
+    assert pricing_tasks
+    assert all("M4" in task.query for task in pricing_tasks)
+    assert all("16GB memory" in task.query for task in pricing_tasks)
+    assert all("512GB SSD" in task.query for task in pricing_tasks)
+    assert all("Space Black" in task.query for task in pricing_tasks)
+
+
+@pytest.mark.asyncio
 async def test_product_compare_v2_plan_supports_requested_walmart_and_target_prices():
     flow = CommerceDecisionFlow(agents={}, execution_profile="product_compare_v2")
 
@@ -1262,7 +1285,7 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
                 "review_highlights": [
                     "核心卖点：屏幕、做工和基础性能是稳定正面反馈。",
                     "槽点与争议：高配版本的价格门槛仍然偏高。",
-                    "目标人群画像：适合先锁定 14-inch M4 基础配置再找平台价差的人。",
+                    "目标人群画像：适合先锁定 14-inch M5 基础配置再找平台价差的人。",
                     "总结性评价：在配置对齐后，这轮结果已经足够支撑一版购买判断。",
                 ]
             }
@@ -1277,16 +1300,16 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
         EvidenceItem(
             category="pricing",
             platform="Amazon",
-            title="Apple 2024 MacBook Pro Laptop with M4 chip, 14-inch, 16GB Unified Memory, 512GB SSD",
-            url="https://www.amazon.com/macbook-pro-m4-14",
+            title="Apple 2025 MacBook Pro Laptop with M5 chip, 14-inch, 24GB Unified Memory, 512GB SSD, Space Black",
+            url="https://www.amazon.com/macbook-pro-m5-14",
             snippet="$1,599.00 new",
             source_type="marketplace",
             source_role="marketplace",
             credibility=0.9,
             price=PriceObservation(
                 platform="Amazon",
-                title="Apple 2024 MacBook Pro Laptop with M4 chip, 14-inch, 16GB Unified Memory, 512GB SSD",
-                url="https://www.amazon.com/macbook-pro-m4-14",
+                title="Apple 2025 MacBook Pro Laptop with M5 chip, 14-inch, 24GB Unified Memory, 512GB SSD, Space Black",
+                url="https://www.amazon.com/macbook-pro-m5-14",
                 price_text="$1,599.00",
                 currency="$",
                 amount=1599.0,
@@ -1295,16 +1318,16 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
         EvidenceItem(
             category="pricing",
             platform="Best Buy",
-            title="Apple - MacBook Pro 14-inch Laptop - M4 chip - 16GB Memory - 512GB SSD - Space Black",
-            url="https://www.bestbuy.com/site/macbook-pro-14-m4",
+            title="Apple - MacBook Pro 14-inch Laptop - M5 chip - 24GB Memory - 512GB SSD - Space Black",
+            url="https://www.bestbuy.com/site/macbook-pro-14-m5",
             snippet="$1,649.00 new",
             source_type="marketplace",
             source_role="marketplace",
             credibility=0.92,
             price=PriceObservation(
                 platform="Best Buy",
-                title="Apple - MacBook Pro 14-inch Laptop - M4 chip - 16GB Memory - 512GB SSD - Space Black",
-                url="https://www.bestbuy.com/site/macbook-pro-14-m4",
+                title="Apple - MacBook Pro 14-inch Laptop - M5 chip - 24GB Memory - 512GB SSD - Space Black",
+                url="https://www.bestbuy.com/site/macbook-pro-14-m5",
                 price_text="$1,649.00",
                 currency="$",
                 amount=1649.0,
@@ -1336,7 +1359,7 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
             title="MacBook Pro review",
             url="https://www.youtube.com/watch?v=macbookpro",
             snippet="Display, thermals, and battery life discussion.",
-            extracted_text="Reviewers say the 14-inch M4 model feels balanced for most people.",
+            extracted_text="Reviewers say the 14-inch M5 model feels balanced for most people.",
             source_type="media",
             source_role="review_video",
             credibility=0.8,
@@ -1346,8 +1369,8 @@ async def test_product_compare_v2_report_keeps_generic_macbook_complete_when_mar
             platform="Reddit",
             title="MacBook Pro owners thread",
             url="https://www.reddit.com/r/macbookpro/comments/example",
-            snippet="Owners compare deal quality for the 14-inch M4 base model.",
-            extracted_text="Owners say the 14-inch M4 base model is the easiest version to price compare across stores.",
+            snippet="Owners compare deal quality for the 14-inch M5 base model.",
+            extracted_text="Owners say the 14-inch M5 base model is the easiest version to price compare across stores.",
             source_type="community",
             source_role="review_community",
             credibility=0.78,

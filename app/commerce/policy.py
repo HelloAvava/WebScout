@@ -168,6 +168,40 @@ APPLE_CHIP_PATTERN = re.compile(
     r"\b(?P<chip>m\d)(?:\s+(?P<tier>pro|max|ultra))?\b",
     re.IGNORECASE,
 )
+CAPACITY_PATTERN = re.compile(
+    r"\b(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>tb|gb|g)\b",
+    re.IGNORECASE,
+)
+MEMORY_CONTEXT_PATTERN = re.compile(
+    r"\b(?:unified\s+memory|memory|ram)\b",
+    re.IGNORECASE,
+)
+STORAGE_CONTEXT_PATTERN = re.compile(
+    r"\b(?:ssd|storage|容量|存储|rom)\b",
+    re.IGNORECASE,
+)
+PRODUCT_COLOR_ALIASES = [
+    ("natural titanium", "natural titanium"),
+    ("black titanium", "black titanium"),
+    ("white titanium", "white titanium"),
+    ("desert titanium", "desert titanium"),
+    ("space black", "space black"),
+    ("space gray", "space gray"),
+    ("space grey", "space gray"),
+    ("midnight", "midnight"),
+    ("starlight", "starlight"),
+    ("graphite", "graphite"),
+    ("obsidian", "obsidian"),
+    ("porcelain", "porcelain"),
+    ("peony", "peony"),
+    ("silver", "silver"),
+    ("black", "black"),
+    ("white", "white"),
+    ("blue", "blue"),
+    ("pink", "pink"),
+    ("green", "green"),
+    ("red", "red"),
+]
 
 
 class BrandSourcePolicy(BaseModel):
@@ -267,6 +301,7 @@ def detect_product_identity(request_text: str) -> ProductIdentity:
         category=category,
         model_name=model_name,
         variant_tokens=variant_tokens,
+        configuration=extract_product_configuration(text),
     )
 
 
@@ -520,6 +555,58 @@ def _normalize_display_size(raw_size: str) -> str:
     return f"{integer_part}-inch" if integer_part.isdigit() else ""
 
 
+def _normalize_capacity(value: str, unit: str) -> str:
+    raw_value = (value or "").strip()
+    raw_unit = (unit or "").strip().lower()
+    if not raw_value or not raw_unit:
+        return ""
+    number = raw_value.rstrip("0").rstrip(".") if "." in raw_value else raw_value
+    normalized_unit = "gb" if raw_unit == "g" else raw_unit
+    return f"{number}{normalized_unit}"
+
+
+def _extract_capacity_configuration(text: str) -> Dict[str, str]:
+    memory = ""
+    storage = ""
+    for match in CAPACITY_PATTERN.finditer(text or ""):
+        value = _normalize_capacity(match.group("value"), match.group("unit"))
+        if not value:
+            continue
+        before = (text or "")[max(0, match.start() - 24) : match.start()]
+        after = (text or "")[match.end() : match.end() + 28]
+        context = f"{before} {after}"
+        is_memory = bool(MEMORY_CONTEXT_PATTERN.search(context))
+        is_storage = bool(STORAGE_CONTEXT_PATTERN.search(context))
+        if is_memory and not memory:
+            memory = value
+            continue
+        if is_storage and not storage:
+            storage = value
+            continue
+        if not storage and not is_memory:
+            storage = value
+    return {"memory": memory, "storage": storage}
+
+
+def _extract_color(text: str) -> str:
+    lowered = (text or "").lower()
+    for keyword, normalized in PRODUCT_COLOR_ALIASES:
+        if re.search(rf"\b{re.escape(keyword)}\b", lowered):
+            return normalized
+    return ""
+
+
+def _extract_market_variant(text: str) -> str:
+    lowered = (text or "").lower()
+    if re.search(r"国行|国版|中国大陆|大陆版|china\s+mainland|chinese\s+version", lowered):
+        return "国行"
+    if re.search(r"\bunlocked\b|无锁", lowered):
+        return "unlocked"
+    if re.search(r"international\s+version|国际版", lowered):
+        return "international"
+    return ""
+
+
 def extract_product_configuration(text: str) -> Dict[str, str]:
     size = ""
     chip = ""
@@ -531,7 +618,15 @@ def extract_product_configuration(text: str) -> Dict[str, str]:
         chip = chip_match.group("chip").lower()
         tier = (chip_match.group("tier") or "").lower()
         chip = f"{chip} {tier}".strip()
-    return {"size": size, "chip": chip}
+    capacities = _extract_capacity_configuration(text or "")
+    return {
+        "size": size,
+        "chip": chip,
+        "memory": capacities.get("memory", ""),
+        "storage": capacities.get("storage", ""),
+        "color": _extract_color(text or ""),
+        "market": _extract_market_variant(text or ""),
+    }
 
 
 def is_configuration_sensitive_family(identity: ProductIdentity) -> bool:
@@ -539,7 +634,9 @@ def is_configuration_sensitive_family(identity: ProductIdentity) -> bool:
 
 
 def has_explicit_configuration(identity: ProductIdentity) -> bool:
-    configuration = extract_product_configuration(identity.model_name or "")
+    configuration = identity.configuration or extract_product_configuration(
+        identity.model_name or ""
+    )
     return any(configuration.values())
 
 
@@ -548,7 +645,16 @@ def build_configuration_signature(text: str, identity: ProductIdentity) -> str:
         return ""
     configuration = extract_product_configuration(text)
     return " / ".join(
-        value for value in [configuration.get("size"), configuration.get("chip")] if value
+        value
+        for value in [
+            configuration.get("size"),
+            configuration.get("chip"),
+            configuration.get("memory"),
+            configuration.get("storage"),
+            configuration.get("color"),
+            configuration.get("market"),
+        ]
+        if value
     )
 
 
@@ -556,11 +662,13 @@ def has_configuration_conflict(request_text: str, candidate_text: str) -> bool:
     identity = detect_product_identity(request_text)
     if not is_configuration_sensitive_family(identity):
         return False
-    requested = extract_product_configuration(identity.model_name or request_text)
+    requested = identity.configuration or extract_product_configuration(
+        identity.model_name or request_text
+    )
     if not any(requested.values()):
         return False
     offered = extract_product_configuration(candidate_text)
     return any(
         requested[key] and offered[key] and requested[key] != offered[key]
-        for key in ("size", "chip")
+        for key in ("size", "chip", "memory", "storage", "color", "market")
     )

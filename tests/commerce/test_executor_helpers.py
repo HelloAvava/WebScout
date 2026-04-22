@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.commerce.mcp_bridge import CommerceMCPBridge
-from app.commerce.policy import detect_product_identity
+from app.commerce.policy import detect_product_identity, extract_product_configuration
 from app.commerce.executor import (
     CommerceResearchExecutor,
     DIRECT_COLLECTION_TIMEOUT_SECONDS,
@@ -332,6 +332,25 @@ def test_build_search_overrides_for_stable_public_web_profile():
     assert build_search_overrides("default") == {}
 
 
+def test_extract_product_configuration_keeps_hard_sku_fields():
+    config = extract_product_configuration(
+        "Apple 14-inch MacBook Pro with M4 chip, 16GB unified memory, 512GB SSD, Space Black"
+    )
+
+    assert config["size"] == "14-inch"
+    assert config["chip"] == "m4"
+    assert config["memory"] == "16gb"
+    assert config["storage"] == "512gb"
+    assert config["color"] == "space black"
+
+
+def test_extract_product_configuration_handles_phone_storage_and_market():
+    config = extract_product_configuration("iPhone 16 Pro 256G 国行")
+
+    assert config["storage"] == "256gb"
+    assert config["market"] == "国行"
+
+
 def test_product_compare_v2_search_queries_preserve_pixel_model():
     task = CommerceTask(
         category="pricing",
@@ -377,6 +396,34 @@ def test_product_compare_v2_accepts_strong_sku_even_with_variant_word():
     )
 
     assert compute_model_match_score(task, text) == 100
+
+
+def test_product_compare_v2_rejects_conflicting_macbook_configuration():
+    task = CommerceTask(
+        category="pricing",
+        platform="Best Buy",
+        query=(
+            "Apple 14-inch MacBook Pro M4 16GB memory 512GB SSD Space Black "
+            "price Best Buy"
+        ),
+        goal="collect Best Buy price",
+        source_role="marketplace",
+    )
+
+    assert (
+        compute_model_match_score(
+            task,
+            "14-inch MacBook Pro - Apple M5 Pro chip with 24GB Memory - 1TB SSD - Space Black",
+        )
+        == 0
+    )
+    assert (
+        compute_model_match_score(
+            task,
+            "Apple 14-inch MacBook Pro M4 chip 16GB Memory 512GB SSD Space Black",
+        )
+        == 100
+    )
 
 
 def test_stable_public_web_prefers_direct_platform_fallback():

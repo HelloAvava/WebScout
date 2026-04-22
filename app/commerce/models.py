@@ -140,6 +140,7 @@ class ProductIdentity(BaseModel):
     category: str = ""
     model_name: str = ""
     variant_tokens: List[str] = Field(default_factory=list)
+    configuration: Dict[str, str] = Field(default_factory=dict)
 
 
 class CommerceTask(BaseModel):

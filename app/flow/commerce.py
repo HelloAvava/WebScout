@@ -33,6 +33,7 @@ from app.commerce.policy import (
     build_configuration_signature,
     detect_product_identity,
     detect_requested_platforms,
+    extract_product_configuration,
     has_explicit_configuration,
     is_configuration_sensitive_family,
     resolve_policy,
@@ -418,6 +419,41 @@ def _brand_qualified_product_name(identity) -> str:
     if not brand or brand.lower() in model_name.lower():
         return model_name
     return f"{brand} {model_name}".strip()
+
+
+def _format_configuration_value(key: str, value: str) -> str:
+    if not value:
+        return ""
+    if key == "chip":
+        return value.upper()
+    if key == "memory":
+        return f"{value.upper()} memory"
+    if key == "storage":
+        return f"{value.upper()} SSD"
+    if key == "color":
+        return value.title()
+    return value
+
+
+def _configured_product_subject(identity, request_text: str) -> str:
+    subject = _brand_qualified_product_name(identity)
+    if not subject:
+        return ""
+    configuration = dict(getattr(identity, "configuration", {}) or {})
+    if not any(configuration.values()):
+        configuration = extract_product_configuration(request_text)
+    lowered_subject = subject.lower()
+    additions: List[str] = []
+    for key in ["size", "chip", "memory", "storage", "color", "market"]:
+        value = (configuration.get(key) or "").strip()
+        if not value:
+            continue
+        if value.lower() in lowered_subject:
+            continue
+        formatted = _format_configuration_value(key, value)
+        if formatted and formatted.lower() not in lowered_subject:
+            additions.append(formatted)
+    return " ".join([subject, *additions]).strip()
 
 
 def _series_comparison_subject(identity) -> str:
@@ -2076,7 +2112,12 @@ class CommerceDecisionFlow(BaseFlow):
             selected_shopping,
         )
         comparison_subject = _series_comparison_subject(identity)
-        task_subject = comparison_subject or _brand_qualified_product_name(identity) or product_name
+        task_subject = (
+            comparison_subject
+            or _configured_product_subject(identity, request_text)
+            or _brand_qualified_product_name(identity)
+            or product_name
+        )
         review_subject = _review_subject_for_comparison(task_subject, comparison_subject)
         policy_id = policy.policy_id if policy is not None else "generic_product_v2"
         tasks: List[CommerceTask] = []
